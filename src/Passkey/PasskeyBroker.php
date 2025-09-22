@@ -56,7 +56,7 @@ class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
     {
         $sql = "SELECT * FROM account.passkeys WHERE user_id = ?";
         $rows = $this->select($sql, [$userId]);
-        return Passkey::buildArray($rows);
+        return Passkey::fromRows($rows);
     }
 
     public function updateUsageAndCounter(string $credentialId, int $newSignCount): void

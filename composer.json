@@ -1,5 +1,5 @@
 {
-    "name": "ophelios/php-webauthn",
+    "name": "ophelios/php-webauthn-passkey",
     "description": "Simple WebAuthn library for PHP to ease passkey creation and authentication.",
     "type": "library",
     "license": "MIT",

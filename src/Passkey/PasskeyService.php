@@ -12,12 +12,12 @@ use Webauthn\AuthenticatorAssertionResponseValidator;
 use Webauthn\AuthenticatorAssertionResponse;
 use Cose\Algorithms;
 
-final class PasskeyService
+final readonly class PasskeyService
 {
     public function __construct(
-        private PasskeyBrokerInterface $broker = new PasskeyBroker(),
-        private ?string $rpId = null,      // e.g. codequill.app (must match HTTPS origin)
-        private string $rpName = 'Your App'
+        private PasskeyProvider $provider,
+        private string $rpName = 'Your App',
+        private ?string $rpId = null
     ) {}
 
     private function requireUserId(): int
@@ -43,7 +43,7 @@ final class PasskeyService
         $userId = $this->requireUserId();
 
         // Build user entity via broker (loads profile info as needed)
-        $userEntity = $this->broker->getUserEntity($userId);
+        $userEntity = $this->provider->getUserEntity($userId);
 
         $rpId = $this->resolveRpId();
         $rp = new PublicKeyCredentialRpEntity($this->rpName, $rpId);
@@ -112,7 +112,7 @@ final class PasskeyService
         $transports     = !empty($source->transports) ? implode(',', $source->transports) : null;
 
         // Store in DB via broker
-        $this->broker->saveAttestation($userId, $credentialId, $publicKeyCose, $signCount, $backupEligible, $transports);
+        $this->provider->saveAttestation($userId, $credentialId, $publicKeyCose, $signCount, $backupEligible, $transports);
 
         return ['ok'=>true];
     }
@@ -154,9 +154,9 @@ final class PasskeyService
 
         // Determine user and credential source
         $credId = $publicKeyCredential->rawId; // binary
-        $userId = $this->broker->findUserIdByCredentialId($credId);
+        $userId = $this->provider->findUserIdByCredentialId($credId);
         if (!$userId) { http_response_code(401); return ['ok'=>false,'err'=>'Unknown credential']; }
-        $credentialSource = $this->broker->getCredentialSource($credId);
+        $credentialSource = $this->provider->getCredentialSource($credId);
         if (!$credentialSource) { http_response_code(401); return ['ok'=>false,'err'=>'Credential source not found']; }
 
         $validator = new AuthenticatorAssertionResponseValidator();
@@ -166,7 +166,7 @@ final class PasskeyService
         unset($_SESSION['webauthn_request_options']);
 
         // Update usage and sign count
-        $this->broker->updateUsageAndCounter($source->publicKeyCredentialId, $source->counter);
+        $this->provider->updateUsageAndCounter($source->publicKeyCredentialId, $source->counter);
 
         // Log user in
         $user = UserService::read($userId);

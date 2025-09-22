@@ -10,8 +10,8 @@ final readonly class Passkey
         public int $sign_count,
         public bool $backup_eligible,
         public ?string $transports,
-        public string $created_at,
-        public ?string $last_used_at,
+        public ?string $created_at = null,
+        public ?string $last_used_at = null,
     ) {}
 
     /**

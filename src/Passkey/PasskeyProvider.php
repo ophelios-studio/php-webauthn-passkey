@@ -34,11 +34,11 @@ readonly class PasskeyProvider
         if (!$row) {
             return null;
         }
-        $row = Passkey::fromRow($this->broker->findByCredentialId($credentialId));
+        $passkey = Passkey::fromRow($row);
 
         // Normalize BYTEA fields
-        $credIdBin = Utils::byteaToString($row->credential_id ?? null);
-        $pubKeyCoseBin = Utils::byteaToString($row->public_key_cose ?? null);
+        $credIdBin = Utils::byteaToString($passkey->credential_id ?? null);
+        $pubKeyCoseBin = Utils::byteaToString($passkey->public_key_cose ?? null);
 
         $transports = null;
         if (!empty($row->transports)) {

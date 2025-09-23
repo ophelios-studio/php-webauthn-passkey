@@ -96,11 +96,12 @@ final readonly class PasskeyService
 
         unset($_SESSION['webauthn_creation_options']);
 
+        // Store credential_id and public_key_cose as hex strings because the broker uses decode(?, 'hex') when inserting
         $passkey = new Passkey(
-            id: bin2hex($source->publicKeyCredentialId),
+            id: null,
             user_id: $authenticatedUserId,
-            credential_id: $source->publicKeyCredentialId,
-            public_key_cose: $source->credentialPublicKey,
+            credential_id: bin2hex($source->publicKeyCredentialId),
+            public_key_cose: bin2hex($source->credentialPublicKey),
             sign_count: $source->counter,
             backup_eligible: ($source->backupEligible ?? false),
             transports: !empty($source->transports)
@@ -181,12 +182,6 @@ final readonly class PasskeyService
         $this->provider->updateUsageAndCounter($source->publicKeyCredentialId, $source->counter);
 
         $callback($userId);
-
-//        // Log user in
-//        $user = UserService::read($userId);
-//        UserService::updateLastConnection($user->id);
-//        Passport::registerUser($user);
-
         return ['ok'=>true];
     }
 

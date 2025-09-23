@@ -3,7 +3,7 @@
 final readonly class Passkey
 {
     public function __construct(
-        public string $id, // uuid
+        public ?string $id, // uuid
         public int $user_id,
         public string $credential_id, // binary (BYTEA) from DB
         public string $public_key_cose, // binary (BYTEA)
@@ -28,8 +28,8 @@ final readonly class Passkey
 
         $id = (string) $get('id');
         $userId = (int) $get('user_id');
-        $credentialId = Utils::byteaToString('credential_id');
-        $publicKeyCose = Utils::byteaToString('public_key_cose');
+        $credentialId = Utils::byteaToString($get('credential_id'));
+        $publicKeyCose = Utils::byteaToString($get('public_key_cose'));
         $signCount = (int) $get('sign_count');
         $backupEligible = (bool) $get('backup_eligible');
         $transports = $get('transports');

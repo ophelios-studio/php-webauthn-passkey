@@ -97,3 +97,67 @@ class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
     }
 }
 ```
+
+### Create your registration Controller
+```php
+<?php namespace Controllers\Application;
+
+use Models\Account\Services\WebAuthnService;
+use Zephyrus\Network\Response;
+use Zephyrus\Network\Router\Post;
+
+class WebAuthnController extends AppController
+{
+    #[Post("/webauthn/register/options")]
+    public function options(): Response
+    {
+        $service = new PasskeyService();
+        return $this->json($service->options(Passport::getUserId()));
+    }
+
+    #[Post("/webauthn/register/verify")]
+    public function verify(): Response
+    {
+        $service = new PasskeyService();
+        return $this->json($service->verify(Passport::getUserId()));
+    }
+}
+```
+
+### Create your authentication Controller
+```php
+<?php namespace Controllers\Public;
+
+use Controllers\Controller;
+use Models\Account\Services\WebAuthnService;
+use Zephyrus\Network\Response;
+use Zephyrus\Network\Router\Post;
+
+class WebAuthnController extends Controller
+{
+    #[Post("/webauthn/login/options")]
+    public function options(): Response
+    {
+        $service = new WebAuthnService();
+        return $this->json($service->assertionOptions());
+    }
+
+    #[Post("/webauthn/login/verify")]
+    public function verify(): Response
+    {
+        $service = new WebAuthnService();
+        return $this->json($service->authenticate());
+    }
+}
+```
+
+### Add routes exception to the CSRF middleware
+Add the following exception pattern to the CSRF middleware in your `config.yml` file.
+
+```yml
+security:
+  csrf:
+    enabled: true
+    exceptions: ['\/webauthn.*']
+  
+```

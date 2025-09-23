@@ -14,7 +14,7 @@ Requirements: PHP >= 8.4
 ```postgresql
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-CREATE TABLE account.passkey
+CREATE TABLE account.passkeys
 (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id INT NOT NULL REFERENCES <YOUR USER ID REFERENCE> ON DELETE CASCADE,
@@ -41,41 +41,44 @@ First, create the broker instance you will use to interact with the database.
 ```php
 <?php namespace Models\Account\Brokers;
 
+use Passkey\Passkey;
+use Passkey\PasskeyBrokerInterface;
 use stdClass;
+use Zephyrus\Database\DatabaseBroker;
 
 class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
 {
     public function findUserIdByCredentialId(string $credentialId): ?int
     {
-        $sql = "SELECT user_id FROM account.passkey WHERE credential_id = decode(?, 'hex') LIMIT 1";
+        $sql = "SELECT user_id FROM account.passkeys WHERE credential_id = ? LIMIT 1";
         $row = $this->selectSingle($sql, [bin2hex($credentialId)]);
         return $row?->user_id ?? null;
     }
 
     public function findByCredentialId(string $credentialId): ?stdClass
     {
-        $sql = "SELECT * FROM account.passkey WHERE credential_id = decode(?, 'hex') LIMIT 1";
+        $sql = "SELECT * FROM account.passkeys WHERE credential_id = ? LIMIT 1";
         return $this->selectSingle($sql, [bin2hex($credentialId)]);
     }
 
     public function findAllByUserId(string $userId): array
     {
-        $sql = "SELECT * FROM account.passkey WHERE user_id = ?";
+        $sql = "SELECT * FROM account.passkeys WHERE user_id = ?";
         return $this->select($sql, [$userId]);
     }
 
     public function findUserIdentity(string $userId): stdClass
     {
-        $sql = "SELECT email, COALESCE(fullname, username) AS display_name FROM account.view_user_profile WHERE id = ?";
+        $sql = "SELECT email, fullname AS display_name FROM account.view_user_profile WHERE id = ?";
         return $this->selectSingle($sql, [$userId]);
     }
 
     public function updateUsageAndCounter(string $credentialId, int $newSignCount): void
     {
-        $this->query("UPDATE account.passkey 
+        $this->query("UPDATE account.passkeys 
                          SET sign_count = ?, 
                              last_used_at = now() 
-                       WHERE credential_id = decode(?, 'hex')", [
+                       WHERE credential_id = ?", [
             $newSignCount,
             bin2hex($credentialId)
         ]);
@@ -83,13 +86,12 @@ class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
 
     public function insert(Passkey $passkey): void
     {
-        // Insert binary data into BYTEA columns using decode(hex, 'hex') to avoid UTF-8 encoding issues
-        $sql = "INSERT INTO account.passkey (user_id, credential_id, public_key_cose, sign_count, backup_eligible, transports) 
+        $sql = "INSERT INTO account.passkeys (user_id, credential_id, public_key_cose, sign_count, backup_eligible, transports) 
                 VALUES (?, decode(?, 'hex'), decode(?, 'hex'), ?, ?, ?)";
         $this->query($sql, [
             $passkey->user_id,
-            $passkey->credential_id,
-            $passkey->public_key_cose,
+            bin2hex($passkey->credential_id),
+            bin2hex($passkey->public_key_cose),
             $passkey->sign_count,
             $passkey->backup_eligible,
             $passkey->transports
@@ -152,7 +154,7 @@ class WebAuthnController extends Controller
 ```
 
 ### Add routes exception to the CSRF middleware
-Add the following exception pattern to the CSRF middleware in your `config.yml` file.
+Add the following exception pattern to the CSRF middleware in your `config.yml` file for a Zephyrus-based project.
 
 ```yml
 security:
@@ -160,4 +162,75 @@ security:
     enabled: true
     exceptions: ['\/webauthn.*']
   
+```
+
+### Front-end module (ESM) for passkey registration and login
+We provide an ES module you can use to handle both Passkey registration (create) and authentication (login) with configurable endpoints.
+
+- Module file: backpack/public/javascripts/modules/passkey.js
+
+Registration (create) example with callbacks:
+
+```html
+<button id="createPasskeyBtn">Create a Passkey</button>
+<script type="module">
+  import { initPasskeyRegistration } from '/javascripts/modules/passkey.js';
+  initPasskeyRegistration({
+    buttonSelector: '#createPasskeyBtn',
+    optionsUrl: '/webauthn/register/options',
+    verifyUrl: '/webauthn/register/verify',
+    onSuccess: () => {
+      // e.g., show a toast or update UI
+      console.log('Passkey created successfully');
+    },
+    onError: (err) => {
+      console.error('Registration failed:', err);
+    }
+  });
+</script>
+```
+
+Login (assertion) example with callbacks:
+
+```html
+<button id="btn-passkey-login">Login with Passkey</button>
+<script type="module">
+  import { initPasskeyLogin } from '/javascripts/modules/passkey.js';
+  initPasskeyLogin({
+    buttonSelector: '#btn-passkey-login',
+    optionsUrl: '/webauthn/login/options',
+    verifyUrl: '/webauthn/login/verify',
+    onSuccess: () => {
+      // e.g., redirect or update UI
+      window.location.href = '/';
+    },
+    onError: (err) => {
+      console.error('Login failed:', err);
+    }
+  });
+</script>
+```
+
+Programmatic usage (no UI binding):
+
+```js
+import { registerPasskey, passkeyLogin } from '/javascripts/modules/passkey.js';
+
+// Registration
+const reg = await registerPasskey({
+  optionsUrl: '/webauthn/register/options',
+  verifyUrl: '/webauthn/register/verify'
+});
+if (!reg.ok) {
+  console.error(reg.err);
+}
+
+// Authentication
+const auth = await passkeyLogin({
+  optionsUrl: '/webauthn/login/options',
+  verifyUrl: '/webauthn/login/verify'
+});
+if (auth.ok) {
+  // success
+}
 ```

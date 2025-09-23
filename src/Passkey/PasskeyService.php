@@ -1,5 +1,7 @@
 <?php namespace Passkey;
 
+use Webauthn\AttestationStatement\AttestationStatementSupportManager;
+use Webauthn\PublicKeyCredential;
 use Webauthn\PublicKeyCredentialRpEntity;
 use Webauthn\AuthenticatorSelectionCriteria;
 use Webauthn\PublicKeyCredentialParameters;
@@ -20,30 +22,9 @@ final readonly class PasskeyService
         private ?string $rpId = null
     ) {}
 
-    private function requireUserId(): int
+    public function options(string $authenticatedUserId): mixed
     {
-        $uid = Passport::getUserId();
-        if (is_null($uid)) {
-            http_response_code(401);
-            exit('Not authenticated');
-        }
-        return $uid;
-    }
-
-    private function resolveRpId(): string
-    {
-        // Derive RP ID from current HTTP host by default (strip port)
-        $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
-        $host = preg_replace('/:.*/', '', $host) ?: 'localhost';
-        return $this->rpId ?? $host;
-    }
-
-    public function options(): mixed
-    {
-        $userId = $this->requireUserId();
-
-        // Build user entity via broker (loads profile info as needed)
-        $userEntity = $this->provider->getUserEntity($userId);
+        $userEntity = $this->provider->getUserCredentialEntity($authenticatedUserId);
 
         $rpId = $this->resolveRpId();
         $rp = new PublicKeyCredentialRpEntity($this->rpName, $rpId);
@@ -55,7 +36,6 @@ final readonly class PasskeyService
         ];
 
         $authSel = AuthenticatorSelectionCriteria::create(
-            authenticatorAttachment: null,
             userVerification: AuthenticatorSelectionCriteria::USER_VERIFICATION_REQUIREMENT_REQUIRED,
             residentKey: AuthenticatorSelectionCriteria::RESIDENT_KEY_REQUIREMENT_REQUIRED,
         );
@@ -69,30 +49,41 @@ final readonly class PasskeyService
             attestation: PublicKeyCredentialCreationOptions::ATTESTATION_CONVEYANCE_PREFERENCE_NONE,
         );
 
-        if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            session_start();
+        }
+
         // Store full options as JSON for later verification (ensures nested JsonSerializable objects are properly serialized)
         $_SESSION['webauthn_creation_options'] = json_encode($creation, JSON_THROW_ON_ERROR);
-
         return json_decode(json_encode($creation, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
     }
 
-    public function verify(): array {
-        $userId = $this->requireUserId();
-        if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+    public function verify(string $authenticatedUserId): array
+    {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            session_start();
+        }
         $optionsData = $_SESSION['webauthn_creation_options'] ?? null;
-        if (!$optionsData) { http_response_code(400); return ['ok'=>false,'err'=>'Options missing']; }
+        if (!$optionsData) {
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Options missing'];
+        }
 
         $raw = file_get_contents('php://input');
         $body = json_decode($raw, true);
         $clientResponse = $body['credential'] ?? null;
-        if (!$clientResponse) { http_response_code(400); return ['ok'=>false,'err'=>'Missing credential']; }
+        if (!$clientResponse) {
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Missing credential'];
+        }
 
         // Load the credential from client using the Serializer (no deprecated loader)
-        $attestationSupport = \Webauthn\AttestationStatement\AttestationStatementSupportManager::create();
-        $serializer = (new WebauthnSerializerFactory($attestationSupport))->create();
-        $publicKeyCredential = $serializer->denormalize($clientResponse, \Webauthn\PublicKeyCredential::class);
+        $attestationSupport = AttestationStatementSupportManager::create();
+        $serializer = new WebauthnSerializerFactory($attestationSupport)->create();
+        $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         if (!($publicKeyCredential->response instanceof AuthenticatorAttestationResponse)) {
-            http_response_code(400); return ['ok'=>false,'err'=>'Invalid response type'];
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Invalid response type'];
         }
         $attestationResponse = $publicKeyCredential->response;
 
@@ -105,16 +96,19 @@ final readonly class PasskeyService
 
         unset($_SESSION['webauthn_creation_options']);
 
-        $credentialId   = $source->publicKeyCredentialId;    // binary
-        $publicKeyCose  = $source->credentialPublicKey;      // binary
-        $signCount      = $source->counter;
-        $backupEligible = (bool)($source->backupEligible ?? false);
-        $transports     = !empty($source->transports) ? implode(',', $source->transports) : null;
-
-        // Store in DB via broker
-        $this->provider->saveAttestation($userId, $credentialId, $publicKeyCose, $signCount, $backupEligible, $transports);
-
-        return ['ok'=>true];
+        $passkey = new Passkey(
+            id: bin2hex($source->publicKeyCredentialId),
+            user_id: $authenticatedUserId,
+            credential_id: $source->publicKeyCredentialId,
+            public_key_cose: $source->credentialPublicKey,
+            sign_count: $source->counter,
+            backup_eligible: ($source->backupEligible ?? false),
+            transports: !empty($source->transports)
+                ? implode(',', $source->transports)
+                : null
+        );
+        $this->provider->saveAttestation($passkey);
+        return ['ok' => true];
     }
 
     public function assertionOptions(): array
@@ -126,27 +120,39 @@ final readonly class PasskeyService
             allowCredentials: [], // username-less, resident keys
             userVerification: AuthenticatorSelectionCriteria::USER_VERIFICATION_REQUIREMENT_REQUIRED,
         );
-        if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            session_start();
+        }
         $_SESSION['webauthn_request_options'] = json_encode($options, JSON_THROW_ON_ERROR);
         return json_decode(json_encode($options, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
     }
 
-    public function authenticate(): array
+    public function authenticate(callable $callback): array
     {
-        if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            session_start();
+        }
         $optionsData = $_SESSION['webauthn_request_options'] ?? null;
-        if (!$optionsData) { http_response_code(400); return ['ok'=>false,'err'=>'Options missing']; }
+        if (!$optionsData) {
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Options missing'];
+        }
 
         $raw = file_get_contents('php://input');
         $body = json_decode($raw, true);
         $clientResponse = $body['credential'] ?? null;
-        if (!$clientResponse) { http_response_code(400); return ['ok'=>false,'err'=>'Missing credential']; }
+        if (!$clientResponse) {
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Missing credential'];
+        }
 
-        $attestationSupport = \Webauthn\AttestationStatement\AttestationStatementSupportManager::create();
-        $serializer = (new WebauthnSerializerFactory($attestationSupport))->create();
-        $publicKeyCredential = $serializer->denormalize($clientResponse, \Webauthn\PublicKeyCredential::class);
+        $attestationSupport = AttestationStatementSupportManager::create();
+        $serializer = new WebauthnSerializerFactory($attestationSupport)->create();
+        $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         if (!($publicKeyCredential->response instanceof AuthenticatorAssertionResponse)) {
-            http_response_code(400); return ['ok'=>false,'err'=>'Invalid response type']; }
+            http_response_code(400);
+            return ['ok' => false, 'err' => 'Invalid response type'];
+        }
         $assertionResponse = $publicKeyCredential->response;
 
         /** @var PublicKeyCredentialRequestOptions $requestOptions */
@@ -155,9 +161,15 @@ final readonly class PasskeyService
         // Determine user and credential source
         $credId = $publicKeyCredential->rawId; // binary
         $userId = $this->provider->findUserIdByCredentialId($credId);
-        if (!$userId) { http_response_code(401); return ['ok'=>false,'err'=>'Unknown credential']; }
+        if (!$userId) {
+            http_response_code(401);
+            return ['ok' => false, 'err' => 'Unknown credential'];
+        }
         $credentialSource = $this->provider->getCredentialSource($credId);
-        if (!$credentialSource) { http_response_code(401); return ['ok'=>false,'err'=>'Credential source not found']; }
+        if (!$credentialSource) {
+            http_response_code(401);
+            return ['ok' => false, 'err' => 'Credential source not found'];
+        }
 
         $validator = new AuthenticatorAssertionResponseValidator();
         // Pass the PublicKeyCredentialSource as required by the library
@@ -168,11 +180,26 @@ final readonly class PasskeyService
         // Update usage and sign count
         $this->provider->updateUsageAndCounter($source->publicKeyCredentialId, $source->counter);
 
-        // Log user in
-        $user = UserService::read($userId);
-        UserService::updateLastConnection($user->id);
-        Passport::registerUser($user);
+        $callback($userId);
+
+//        // Log user in
+//        $user = UserService::read($userId);
+//        UserService::updateLastConnection($user->id);
+//        Passport::registerUser($user);
 
         return ['ok'=>true];
+    }
+
+    /**
+     * Resolves the RP ID to be used for the current request. By default, it derives the RP ID from the current HTTP
+     * host, removing any port number if present.
+     *
+     * @return string The resolved RP ID.
+     */
+    private function resolveRpId(): string
+    {
+        $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
+        $host = preg_replace('/:.*/', '', $host) ?: 'localhost';
+        return $this->rpId ?? $host;
     }
 }

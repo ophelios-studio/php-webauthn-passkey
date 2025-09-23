@@ -63,16 +63,8 @@ readonly class PasskeyProvider
         $this->broker->updateUsageAndCounter($credentialId, $newSignCount);
     }
 
-    public function saveAttestation(int $userId, string $credentialId, string $publicKeyCose, int $signCount, bool $backupEligible, ?string $transports): void
+    public function saveAttestation(Passkey $passkey): void
     {
-        $this->broker->insert(new Passkey(
-            id: bin2hex($credentialId),
-            user_id: $userId,
-            credential_id: $credentialId,
-            public_key_cose: $publicKeyCose,
-            sign_count: $signCount,
-            backup_eligible: $backupEligible,
-            transports: $transports
-        ));
+        $this->broker->insert($passkey);
     }
 }

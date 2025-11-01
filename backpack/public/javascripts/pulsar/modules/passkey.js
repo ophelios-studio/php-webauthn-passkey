@@ -12,6 +12,21 @@ function bufferToB64url(buf) {
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function encodePrfResultsFromCredential(cred) {
+    try {
+        if (!cred || typeof cred.getClientExtensionResults !== 'function') return null;
+        const ext = cred.getClientExtensionResults();
+        const prf = ext && ext.prfResults && ext.prfResults.results ? ext.prfResults.results : null;
+        if (!prf) return null;
+        const out = {};
+        if (prf.first) out.first = bufferToB64url(prf.first);
+        if (prf.second) out.second = bufferToB64url(prf.second);
+        return out;
+    } catch (_) {
+        return null;
+    }
+}
+
 function credToJSON(c) {
     return {
         id: c.id,
@@ -42,7 +57,7 @@ export async function registerPasskey(cfg = {}) {
     const optionsUrl = cfg.optionsUrl || "/webauthn/register/options";
     const verifyUrl = cfg.verifyUrl || "/webauthn/register/verify";
     try {
-        const optRes = await fetch(optionsUrl, {method: 'POST', credentials: 'include'});
+        const optRes = await fetch(optionsUrl, { method: 'POST', credentials: 'include' });
         if (!optRes.ok) {
             throw new Error('options failed');
         }
@@ -54,30 +69,45 @@ export async function registerPasskey(cfg = {}) {
             opts.user.id = b64urlToBuffer(opts.user.id);
         }
         if (Array.isArray(opts.excludeCredentials)) {
-            opts.excludeCredentials = opts.excludeCredentials.map(x => ({...x, id: b64urlToBuffer(x.id)}));
+            opts.excludeCredentials = opts.excludeCredentials.map(x => ({ ...x, id: b64urlToBuffer(x.id) }));
+        }
+
+        // Experimental PRF
+        const prfEnabled = !!(cfg.prf && cfg.prf.enabled);
+        if (prfEnabled && opts.extensions && opts.extensions.prf && opts.extensions.prf.eval && opts.extensions.prf.eval.first) {
+            opts.extensions = Object.assign({}, opts.extensions, {
+                prf: { eval: { first: b64urlToBuffer(opts.extensions.prf.eval.first) } }
+            });
         }
 
         // Create credential
-        const cred = await navigator.credentials.create({publicKey: opts});
+        const cred = await navigator.credentials.create({ publicKey: opts });
         if (!cred) {
             throw new Error('user canceled');
         }
 
         // Send back for verification/storage
+        const payload = { credential: credToJSON(cred) };
+        if (prfEnabled) {
+            const prf = encodePrfResultsFromCredential(cred);
+            if (prf) {
+                payload.credential.clientExtensionResults = Object.assign({}, payload.credential.clientExtensionResults || {}, { prfResults: { results: prf } });
+            }
+        }
         const verifyRes = await fetch(verifyUrl, {
             method: 'POST',
             credentials: 'include',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({credential: credToJSON(cred)})
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
-        const j = await verifyRes.json().catch(() => ({ok: false, err: 'Invalid verify response'}));
+        const j = await verifyRes.json().catch(() => ({ ok: false, err: 'Invalid verify response' }));
         if (!verifyRes.ok || !j.ok) {
             throw new Error(j.err || 'verify failed');
         }
-        return {ok: true};
+        return { ok: true };
     } catch (e) {
         console.error(e);
-        return {ok: false, err: e && e.message ? e.message : String(e)};
+        return { ok: false, err: e && e.message ? e.message : String(e) };
     }
 }
 
@@ -93,7 +123,7 @@ export async function passkeyLogin(cfg = {}) {
     const verifyUrl = cfg.verifyUrl || "/webauthn/login/verify";
 
     try {
-        const optRes = await fetch(optionsUrl, {method: "POST", credentials: "include"});
+        const optRes = await fetch(optionsUrl, { method: "POST", credentials: "include" });
         if (!optRes.ok) {
             throw new Error("Failed to get options");
         }
@@ -108,7 +138,14 @@ export async function passkeyLogin(cfg = {}) {
                 transports: d.transports || undefined,
             }));
         }
-        const cred = await navigator.credentials.get({publicKey});
+        // Experimental PRF
+        const prfEnabled = !!(cfg.prf && cfg.prf.enabled);
+        if (prfEnabled && options.extensions && options.extensions.prf && options.extensions.prf.eval && options.extensions.prf.eval.first) {
+            publicKey.extensions = Object.assign({}, publicKey.extensions || {}, {
+                prf: { eval: { first: b64urlToBuffer(options.extensions.prf.eval.first) } }
+            });
+        }
+        const cred = await navigator.credentials.get({ publicKey });
         const credential = {
             id: cred.id,
             type: cred.type,
@@ -119,23 +156,24 @@ export async function passkeyLogin(cfg = {}) {
                 signature: bufferToB64url(cred.response.signature),
                 userHandle: cred.response.userHandle ? bufferToB64url(cred.response.userHandle) : null,
             },
+            clientExtensionResults: prfEnabled ? (function () { const prf = encodePrfResultsFromCredential(cred); return prf ? { prfResults: { results: prf } } : {}; })() : undefined,
         };
 
         const verifyRes = await fetch(verifyUrl, {
             method: "POST",
             credentials: "include",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({credential}),
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ credential }),
         });
 
-        const verify = await verifyRes.json().catch(() => ({ok: false, err: "Invalid verify response"}));
+        const verify = await verifyRes.json().catch(() => ({ ok: false, err: "Invalid verify response" }));
         if (!verifyRes.ok || !verify.ok) {
             throw new Error(verify.err || "Verification failed");
         }
-        return {ok: true};
+        return { ok: true };
     } catch (e) {
         console.error(e);
-        return {ok: false, err: e && e.message ? e.message : String(e)};
+        return { ok: false, err: e && e.message ? e.message : String(e) };
     }
 }
 
@@ -152,15 +190,15 @@ export function initPasskeyRegistration(cfg = {}) {
     const buttonSelector = cfg.buttonSelector || '#createPasskeyBtn';
     const optionsUrl = cfg.optionsUrl || '/webauthn/register/options';
     const verifyUrl = cfg.verifyUrl || '/webauthn/register/verify';
-    const onSuccess = typeof cfg.onSuccess === 'function' ? cfg.onSuccess : () => {};
-    const onError = typeof cfg.onError === 'function' ? cfg.onError : () => {};
+    const onSuccess = typeof cfg.onSuccess === 'function' ? cfg.onSuccess : () => { };
+    const onError = typeof cfg.onError === 'function' ? cfg.onError : () => { };
 
     const btn = document.querySelector(buttonSelector);
     if (!btn) return;
 
     btn.addEventListener('click', async (ev) => {
         ev.preventDefault();
-        const res = await registerPasskey({optionsUrl, verifyUrl});
+        const res = await registerPasskey({ optionsUrl, verifyUrl, prf: cfg.prf });
         if (res.ok) {
             onSuccess(res);
         } else {
@@ -182,14 +220,14 @@ export function initPasskeyLogin(cfg = {}) {
     const buttonSelector = cfg.buttonSelector || "#btn-passkey-login";
     const optionsUrl = cfg.optionsUrl || "/webauthn/login/options";
     const verifyUrl = cfg.verifyUrl || "/webauthn/login/verify";
-    const onSuccess = typeof cfg.onSuccess === 'function' ? cfg.onSuccess : () => {};
-    const onError = typeof cfg.onError === 'function' ? cfg.onError : () => {};
+    const onSuccess = typeof cfg.onSuccess === 'function' ? cfg.onSuccess : () => { };
+    const onError = typeof cfg.onError === 'function' ? cfg.onError : () => { };
 
     const btn = document.querySelector(buttonSelector);
     if (!btn) return;
     btn.addEventListener("click", async (ev) => {
         ev.preventDefault();
-        const res = await passkeyLogin({optionsUrl, verifyUrl});
+        const res = await passkeyLogin({ optionsUrl, verifyUrl, prf: cfg.prf });
         if (res.ok) {
             onSuccess(res);
         } else {

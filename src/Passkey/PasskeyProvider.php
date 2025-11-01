@@ -1,4 +1,6 @@
-<?php namespace Passkey;
+<?php
+
+namespace Passkey;
 
 use Symfony\Component\Uid\Uuid;
 use Webauthn\PublicKeyCredentialDescriptor;
@@ -13,6 +15,11 @@ readonly class PasskeyProvider
     public function __construct(PasskeyBrokerInterface $broker)
     {
         $this->broker = $broker;
+    }
+
+    public function findByCredentialId(string $credentialId): Passkey
+    {
+        return Passkey::fromRow($this->broker->findByCredentialId($credentialId));
     }
 
     public function findUserIdByCredentialId(string $credentialId): ?int

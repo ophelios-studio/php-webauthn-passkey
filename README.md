@@ -22,6 +22,7 @@ CREATE TABLE account.passkeys
     public_key_cose BYTEA NOT NULL, -- COSE-encoded public key
     sign_count BIGINT NOT NULL DEFAULT 0,
     backup_eligible BOOLEAN NOT NULL DEFAULT false,
+    prf_salt BYTEA, -- 32-byte per-passkey salt (used for deterministic PRF seed derivation)
     transports TEXT, -- e.g. "internal,usb,nfc"
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used_at TIMESTAMPTZ
@@ -86,18 +87,24 @@ class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
 
     public function insert(Passkey $passkey): void
     {
-        $sql = "INSERT INTO account.passkeys (user_id, credential_id, public_key_cose, sign_count, backup_eligible, transports) 
-                VALUES (?, decode(?, 'hex'), decode(?, 'hex'), ?, ?, ?)";
+        $sql = "INSERT INTO account.passkeys (user_id, credential_id, public_key_cose, sign_count, backup_eligible, prf_salt, transports) 
+                VALUES (?, decode(?, 'hex'), decode(?, 'hex'), ?, ?, decode(?, 'hex'), ?)";
         $this->query($sql, [
             $passkey->user_id,
             bin2hex($passkey->credential_id),
             bin2hex($passkey->public_key_cose),
             $passkey->sign_count,
             $passkey->backup_eligible,
+            bin2hex($passkey->prf_salt ?? ''),
             $passkey->transports
         ]);
     }
 }
+```
+If you already have a table and want to use the PRF extension, add the column:
+
+```sql
+ALTER TABLE account.passkeys ADD COLUMN prf_salt BYTEA;
 ```
 
 ### Create your registration Controller
@@ -179,6 +186,8 @@ Registration (create) example with callbacks:
     buttonSelector: '#createPasskeyBtn',
     optionsUrl: '/webauthn/register/options',
     verifyUrl: '/webauthn/register/verify',
+    // Experimental PRF (disabled by default)
+    prf: { enabled: true },
     onSuccess: () => {
       // e.g., show a toast or update UI
       console.log('Passkey created successfully');
@@ -200,6 +209,8 @@ Login (assertion) example with callbacks:
     buttonSelector: '#btn-passkey-login',
     optionsUrl: '/webauthn/login/options',
     verifyUrl: '/webauthn/login/verify',
+    // Experimental PRF (disabled by default)
+    prf: { enabled: true },
     onSuccess: () => {
       // e.g., redirect or update UI
       window.location.href = '/';
@@ -228,9 +239,31 @@ if (!reg.ok) {
 // Authentication
 const auth = await passkeyLogin({
   optionsUrl: '/webauthn/login/options',
-  verifyUrl: '/webauthn/login/verify'
+  verifyUrl: '/webauthn/login/verify',
+  prf: { enabled: true } // experimental
 });
 if (auth.ok) {
   // success
 }
 ```
+
+## Experimental: PRF-based deterministic seed (opt-in)
+
+- Server exposes a site-scoped PRF input salt when enabled. Instantiate the service with `enablePrf: true`:
+
+```php
+$service = new Passkey\PasskeyService($provider, rpName: 'Your App', enablePrf: true);
+```
+
+- During registration, a per-passkey 32-byte random salt is generated and stored in `prf_salt`.
+
+- Clients that opt-in to PRF (`prf: { enabled: true }`) will request PRF from the authenticator and return the PRF output in `clientExtensionResults.prfResults`.
+
+- After a successful assertion (or attestation), you can derive a deterministic 32-byte seed on the server from the client PRF output and the stored `prf_salt` using:
+
+```php
+$seedB64Url = $service->deriveSeedFromPrf($credentialIdRaw, $prfFirstOutputB64Url);
+```
+>Notes on PRF-derived seed usage: 
+> - Unfortunately, not all authenticators support PRF, as this is a client opt-in extension, you cannot enforce it. I would highly recommend keeping a fallback solution. Currently, only linux-based platform authenticators, macOS/iOS, android and certain authenticator app support PRF.
+> - The derived PRF output is a stable and cryptographically strong 32-byte material that can be used as a `seed` for encryption. It is not a secret by itself. And thus, cannot and should not be used as one.

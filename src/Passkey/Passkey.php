@@ -9,6 +9,7 @@ final readonly class Passkey
         public string $public_key_cose, // binary (BYTEA)
         public int $sign_count,
         public bool $backup_eligible,
+        public ?string $prf_salt = null, // binary (BYTEA)
         public ?string $transports,
         public ?string $created_at = null,
         public ?string $last_used_at = null,
@@ -32,6 +33,7 @@ final readonly class Passkey
         $publicKeyCose = Utils::byteaToString($get('public_key_cose'));
         $signCount = (int) $get('sign_count');
         $backupEligible = (bool) $get('backup_eligible');
+        $prfSalt = Utils::byteaToString($get('prf_salt'));
         $transports = $get('transports');
         $transports = $transports !== null ? (string)$transports : null;
         $createdAt = (string) $get('created_at');
@@ -45,6 +47,7 @@ final readonly class Passkey
             public_key_cose: $publicKeyCose,
             sign_count: $signCount,
             backup_eligible: $backupEligible,
+            prf_salt: $prfSalt,
             transports: $transports,
             created_at: $createdAt,
             last_used_at: $lastUsedAt,

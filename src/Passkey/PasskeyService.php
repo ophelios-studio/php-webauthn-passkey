@@ -1,4 +1,6 @@
-<?php namespace Passkey;
+<?php
+
+namespace Passkey;
 
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
 use Webauthn\PublicKeyCredential;
@@ -19,7 +21,7 @@ final readonly class PasskeyService
     public function __construct(
         private PasskeyProvider $provider,
         private string $rpName = 'Your App',
-        private ?string $rpId = null
+        private bool $enablePrf = false,
     ) {}
 
     public function options(string $authenticatedUserId): mixed
@@ -55,7 +57,12 @@ final readonly class PasskeyService
 
         // Store full options as JSON for later verification (ensures nested JsonSerializable objects are properly serialized)
         $_SESSION['webauthn_creation_options'] = json_encode($creation, JSON_THROW_ON_ERROR);
-        return json_decode(json_encode($creation, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        $result = json_decode(json_encode($creation, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        if ($this->enablePrf) {
+            $rpEvalSalt = $this->deriveEvalSalt($rpId);
+            $result['extensions']['prf']['eval']['first'] = self::base64url_encode($rpEvalSalt);
+        }
+        return $result;
     }
 
     public function verify(string $authenticatedUserId): array
@@ -104,6 +111,7 @@ final readonly class PasskeyService
             public_key_cose: bin2hex($source->credentialPublicKey),
             sign_count: $source->counter,
             backup_eligible: ($source->backupEligible ?? false),
+            prf_salt: bin2hex(random_bytes(32)),
             transports: !empty($source->transports)
                 ? implode(',', $source->transports)
                 : null
@@ -125,7 +133,11 @@ final readonly class PasskeyService
             session_start();
         }
         $_SESSION['webauthn_request_options'] = json_encode($options, JSON_THROW_ON_ERROR);
-        return json_decode(json_encode($options, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        $result = json_decode(json_encode($options, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        if ($this->enablePrf) {
+            $result['extensions']['prf']['eval']['first'] = self::base64url_encode($this->deriveEvalSalt($rpId));
+        }
+        return $result;
     }
 
     public function authenticate(callable $callback): array
@@ -182,7 +194,7 @@ final readonly class PasskeyService
         $this->provider->updateUsageAndCounter($source->publicKeyCredentialId, $source->counter);
 
         $callback($userId);
-        return ['ok'=>true];
+        return ['ok' => true];
     }
 
     /**
@@ -196,5 +208,36 @@ final readonly class PasskeyService
         $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
         $host = preg_replace('/:.*/', '', $host) ?: 'localhost';
         return $this->rpId ?? $host;
+    }
+
+    private function deriveEvalSalt(): string
+    {
+        return hash('sha256', 'webauthn:prf-eval:v1|' . $this->resolveRpId(), true);
+    }
+
+    public function deriveSeedFromPrf(string $credentialIdRaw, string $prfFirstB64Url): string
+    {
+        $passkey = $this->provider->findByCredentialId($credentialIdRaw);
+        if (!$passkey || $passkey->prf_salt === null || $passkey->prf_salt === '') {
+            throw new \RuntimeException('Passkey salt not found');
+        }
+        $prf = self::base64url_decode($prfFirstB64Url);
+        $seed = hash_hkdf('sha256', $prf, 32, 'seed:v1', $passkey->prf_salt);
+        return self::base64url_encode($seed);
+    }
+
+    private static function base64url_encode(string $bin): string
+    {
+        return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');
+    }
+
+    private static function base64url_decode(string $b64): string
+    {
+        $b64 = strtr($b64, '-_', '+/');
+        $pad = strlen($b64) % 4;
+        if ($pad) {
+            $b64 .= str_repeat('=', 4 - $pad);
+        }
+        return base64_decode($b64, true) ?: '';
     }
 }

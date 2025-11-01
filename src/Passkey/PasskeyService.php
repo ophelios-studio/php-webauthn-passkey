@@ -209,7 +209,11 @@ final readonly class PasskeyService
             throw new \RuntimeException('Passkey salt not found');
         }
         $prf = self::base64url_decode($prfFirstB64Url);
-        $seed = hash_hkdf('sha256', $prf, 32, 'seed:v1', $passkey->prf_salt);
+        $salt = $passkey->prf_salt;
+        if (is_string($salt) && strlen($salt) % 2 === 0 && ctype_xdigit($salt)) {
+            $salt = hex2bin($salt) ?: $salt;
+        }
+        $seed = hash_hkdf('sha256', $prf, 32, 'seed:v1', $salt);
         return self::base64url_encode($seed);
     }
 
@@ -226,9 +230,9 @@ final readonly class PasskeyService
         return $this->rpId ?? $host;
     }
 
-    private function deriveEvalSalt(): string
+    private function deriveEvalSalt(string $rpId): string
     {
-        return hash('sha256', 'webauthn:prf-eval:v1|' . $this->resolveRpId(), true);
+        return hash('sha256', 'webauthn:prf-eval:v1|' . $rpId, true);
     }
 
     private static function base64url_encode(string $bin): string

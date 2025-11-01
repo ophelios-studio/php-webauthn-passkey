@@ -16,7 +16,9 @@ function encodePrfResultsFromCredential(cred) {
     try {
         if (!cred || typeof cred.getClientExtensionResults !== 'function') return null;
         const ext = cred.getClientExtensionResults();
-        const prf = ext && ext.prfResults && ext.prfResults.results ? ext.prfResults.results : null;
+        const prf = ext && ext.prf && ext.prf.results
+            ? ext.prf.results
+            : (ext && ext.prfResults && ext.prfResults.results ? ext.prfResults.results : null);
         if (!prf) return null;
         const out = {};
         if (prf.first) out.first = bufferToB64url(prf.first);

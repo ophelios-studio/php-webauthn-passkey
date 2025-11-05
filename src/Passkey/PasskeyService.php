@@ -21,6 +21,7 @@ final readonly class PasskeyService
     public function __construct(
         private PasskeyProvider $provider,
         private string $rpName = 'Your App',
+        private ?string $rpId = null,
         private bool $enablePrf = false,
     ) {}
 

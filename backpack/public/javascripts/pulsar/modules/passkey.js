@@ -142,8 +142,14 @@ export async function passkeyLogin(cfg = {}) {
         }
         // Experimental PRF
         const prfEnabled = !!(cfg.prf && cfg.prf.enabled);
-        if (prfEnabled && options.extensions && options.extensions.prf && options.extensions.prf.eval && options.extensions.prf.eval.first) {
-            publicKey.extensions = Object.assign({}, publicKey.extensions || {}, {
+        if (
+            prfEnabled &&
+            options.extensions &&
+            options.extensions.prf &&
+            options.extensions.prf.eval &&
+            options.extensions.prf.eval.first
+        ) {
+            options.extensions = Object.assign({}, options.extensions, {
                 prf: { eval: { first: b64urlToBuffer(options.extensions.prf.eval.first) } }
             });
         }

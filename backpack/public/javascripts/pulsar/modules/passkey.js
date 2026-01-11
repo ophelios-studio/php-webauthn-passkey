@@ -144,13 +144,13 @@ export async function passkeyLogin(cfg = {}) {
         const prfEnabled = !!(cfg.prf && cfg.prf.enabled);
         if (
             prfEnabled &&
-            options.extensions &&
-            options.extensions.prf &&
-            options.extensions.prf.eval &&
-            options.extensions.prf.eval.first
+            publicKey.extensions &&
+            publicKey.extensions.prf &&
+            publicKey.extensions.prf.eval &&
+            publicKey.extensions.prf.eval.first
         ) {
-            options.extensions = Object.assign({}, options.extensions, {
-                prf: { eval: { first: b64urlToBuffer(options.extensions.prf.eval.first) } }
+            publicKey.extensions = Object.assign({}, publicKey.extensions, {
+                prf: { eval: { first: b64urlToBuffer(publicKey.extensions.prf.eval.first) } }
             });
         }
         const cred = await navigator.credentials.get({ publicKey });
@@ -213,6 +213,87 @@ export function initPasskeyRegistration(cfg = {}) {
             onError(res.err || 'Unknown error');
         }
     });
+}
+
+/**
+ * Do an assertion ONLY to obtain PRF output (no login). Returns { credentialId, prfFirst } in base64url.
+ */
+export async function prfEvaluate(cfg = {}) {
+    const optionsUrl = cfg.optionsUrl || "/webauthn/prf/options";
+
+    const optRes = await fetch(optionsUrl, { method: "POST", credentials: "include" });
+    if (!optRes.ok) throw new Error("Failed to get PRF options");
+
+    const options = await optRes.json();
+
+    const publicKey = Object.assign({}, options, {
+        challenge: b64urlToBuffer(options.challenge),
+    });
+
+    if (publicKey.allowCredentials && publicKey.allowCredentials.length) {
+        publicKey.allowCredentials = publicKey.allowCredentials.map((d) => ({
+            type: d.type,
+            id: b64urlToBuffer(d.id),
+            transports: d.transports || undefined,
+        }));
+    }
+
+    // PRF eval (must be ArrayBuffer in request)
+    if (
+        publicKey.extensions &&
+        publicKey.extensions.prf &&
+        publicKey.extensions.prf.eval &&
+        publicKey.extensions.prf.eval.first
+    ) {
+        publicKey.extensions = Object.assign({}, publicKey.extensions, {
+            prf: { eval: { first: b64urlToBuffer(publicKey.extensions.prf.eval.first) } }
+        });
+    }
+
+    const cred = await navigator.credentials.get({ publicKey });
+    if (!cred) throw new Error("User canceled");
+
+    const prf = encodePrfResultsFromCredential(cred);
+    if (!prf || !prf.first) throw new Error("PRF result missing (device/browser may not support PRF)");
+
+    return {
+        credentialId: bufferToB64url(cred.rawId),
+        prfFirst: prf.first,
+    };
+}
+
+/**
+ * Evaluate PRF and POST it to an arbitrary backend endpoint.
+ *
+ * cfg:
+ * - optionsUrl (required)
+ * - actionUrl (required)
+ * - buildPayload (optional): ({ credentialId, prfFirst }) => object
+ */
+export async function runPrfBoundAction(cfg = {}) {
+    const actionUrl = cfg.actionUrl;
+    if (!actionUrl) throw new Error("runPrfBoundAction: missing actionUrl");
+
+    const prf = await prfEvaluate({ optionsUrl: cfg.optionsUrl });
+
+    const buildPayload =
+        typeof cfg.buildPayload === "function"
+            ? cfg.buildPayload
+            : ({ credentialId, prfFirst }) => ({
+                credential_id: credentialId,
+                prf_first: prfFirst,
+            });
+
+    const res = await fetch(actionUrl, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(prf)),
+    });
+
+    const j = await res.json().catch(() => ({ ok: false, err: "Invalid response" }));
+    if (!res.ok || !j.ok) throw new Error(j.err || "Action failed");
+    return j;
 }
 
 /**

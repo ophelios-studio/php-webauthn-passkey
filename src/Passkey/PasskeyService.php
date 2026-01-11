@@ -114,6 +114,7 @@ final readonly class PasskeyService
             sign_count: $source->counter,
             backup_eligible: ($source->backupEligible ?? false),
             prf_salt: bin2hex(random_bytes(32)),
+            prf_eval_label: $this->prfEvalSaltLabel,
             transports: !empty($source->transports)
                 ? implode(',', $source->transports)
                 : null

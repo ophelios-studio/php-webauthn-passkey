@@ -271,24 +271,18 @@ export async function prfEvaluate(cfg = {}) {
  * - buildPayload (optional): ({ credentialId, prfFirst }) => object
  */
 export async function runPrfBoundAction(cfg = {}) {
-    const actionUrl = cfg.actionUrl;
-    if (!actionUrl) throw new Error("runPrfBoundAction: missing actionUrl");
-
+    const actionUrl = cfg.actionUrl || cfg.enableUrl || "/webauthn/prf/enable";
     const prf = await prfEvaluate({ optionsUrl: cfg.optionsUrl });
 
-    const buildPayload =
-        typeof cfg.buildPayload === "function"
-            ? cfg.buildPayload
-            : ({ credentialId, prfFirst }) => ({
-                credential_id: credentialId,
-                prf_first: prfFirst,
-            });
+    const payload = typeof cfg.buildPayload === "function"
+        ? cfg.buildPayload(prf)
+        : { credential_id: prf.credentialId, prf_first: prf.prfFirst };
 
     const res = await fetch(actionUrl, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(prf)),
+        body: JSON.stringify(payload),
     });
 
     const j = await res.json().catch(() => ({ ok: false, err: "Invalid response" }));

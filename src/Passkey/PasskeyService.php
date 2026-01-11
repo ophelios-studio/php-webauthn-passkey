@@ -23,6 +23,7 @@ final readonly class PasskeyService
         private string $rpName = 'Your App',
         private ?string $rpId = null,
         private bool $enablePrf = false,
+        private string $prfEvalSaltLabel = 'webauthn:prf-eval:v1'
     ) {}
 
     public function options(string $authenticatedUserId): mixed
@@ -233,7 +234,11 @@ final readonly class PasskeyService
 
     private function deriveEvalSalt(string $rpId): string
     {
-        return hash('sha256', 'webauthn:prf-eval:v1|' . $rpId, true);
+        $label = trim($this->prfEvalSaltLabel);
+        if ($label === '') {
+            $label = 'webauthn:prf-eval:v1'; // safety fallback
+        }
+        return hash('sha256', $label . "\0" . $rpId, true);
     }
 
     private static function base64url_encode(string $bin): string

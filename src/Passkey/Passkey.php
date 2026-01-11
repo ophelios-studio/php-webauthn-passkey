@@ -4,12 +4,13 @@ final readonly class Passkey
 {
     public function __construct(
         public ?string $id, // uuid
-        public int $user_id,
+        public mixed $user_id,
         public string $credential_id, // binary (BYTEA) from DB
         public string $public_key_cose, // binary (BYTEA)
         public int $sign_count,
         public bool $backup_eligible,
         public ?string $prf_salt = null, // binary (BYTEA)
+        public ?string $prf_eval_label = null,
         public ?string $transports,
         public ?string $created_at = null,
         public ?string $last_used_at = null,
@@ -28,7 +29,7 @@ final readonly class Passkey
         };
 
         $id = (string) $get('id');
-        $userId = (int) $get('user_id');
+        $userId = $get('user_id');
         $credentialId = Utils::byteaToString($get('credential_id'));
         $publicKeyCose = Utils::byteaToString($get('public_key_cose'));
         $signCount = (int) $get('sign_count');
@@ -39,6 +40,7 @@ final readonly class Passkey
         $createdAt = (string) $get('created_at');
         $lastUsedAt = $get('last_used_at');
         $lastUsedAt = $lastUsedAt !== null ? (string)$lastUsedAt : null;
+        $prfEvalLabel = $get('prf_eval_label');
 
         return new self(
             id: $id,
@@ -48,6 +50,7 @@ final readonly class Passkey
             sign_count: $signCount,
             backup_eligible: $backupEligible,
             prf_salt: $prfSalt,
+            prf_eval_label: $prfEvalLabel,
             transports: $transports,
             created_at: $createdAt,
             last_used_at: $lastUsedAt,

@@ -27,7 +27,7 @@ readonly class PasskeyProvider
         return $this->broker->findUserIdByCredentialId($credentialId);
     }
 
-    public function getUserCredentialEntity(string $userId): PublicKeyCredentialUserEntity
+    public function getUserCredentialEntity(mixed $userId): PublicKeyCredentialUserEntity
     {
         $profile = $this->broker->findUserIdentity($userId);
         $email = $profile->email ?? $userId;

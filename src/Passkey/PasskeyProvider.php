@@ -24,12 +24,12 @@ readonly class PasskeyProvider
 
     public function findUserIdByCredentialId(string $credentialId): ?int
     {
-        return $this->broker->findUserIdByCredentialId($credentialId);
+        return $this->broker->findIdentifierByCredentialId($credentialId);
     }
 
     public function getUserCredentialEntity(mixed $userId): PublicKeyCredentialUserEntity
     {
-        $profile = $this->broker->findUserIdentity($userId);
+        $profile = $this->broker->findIdentity($userId);
         $email = $profile->email ?? $userId;
         $display = $profile->display_name ?? $userId;
         return new PublicKeyCredentialUserEntity($email, $userId, $display);
@@ -49,13 +49,13 @@ readonly class PasskeyProvider
             $transports = array_values(array_filter(array_map('trim', explode(',', $row->transports))));
         }
         return new PublicKeyCredentialSource(
-            publicKeyCredentialId: $this->decodeHex($credIdBin),
+            publicKeyCredentialId: hex2bin($credIdBin),
             type: PublicKeyCredentialDescriptor::CREDENTIAL_TYPE_PUBLIC_KEY,
             transports: $transports,
             attestationType: 'none',
             trustPath: new EmptyTrustPath(),
             aaguid: Uuid::fromString('00000000-0000-0000-0000-000000000000'),
-            credentialPublicKey: $this->decodeHex($pubKeyCoseBin),
+            credentialPublicKey: hex2bin($pubKeyCoseBin),
             userHandle: (string)$row->user_id,
             counter: (int)$row->sign_count,
             otherUI: []
@@ -70,24 +70,5 @@ readonly class PasskeyProvider
     public function saveAttestation(Passkey $passkey): void
     {
         $this->broker->insert($passkey);
-    }
-
-
-    /**
-     * Decodes a given hexadecimal string into its binary representation if certain conditions are met.
-     *
-     * @param string $possibleHex The string potentially containing hexadecimal data.
-     * @return string The decoded binary string if the input was a valid hexadecimal string; otherwise, returns the
-     *                original string.
-     */
-    private function decodeHex(string $possibleHex): string
-    {
-        if ($possibleHex !== '' && ctype_xdigit($possibleHex) && (strlen($possibleHex) % 2 === 0)) {
-            $decoded = @hex2bin($possibleHex);
-            if ($decoded !== false) {
-                return $decoded;
-            }
-        }
-        return $possibleHex;
     }
 }

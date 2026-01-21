@@ -1,6 +1,4 @@
-<?php
-
-namespace Passkey;
+<?php namespace Passkey;
 
 use Symfony\Component\Uid\Uuid;
 use Webauthn\PublicKeyCredentialDescriptor;
@@ -19,7 +17,16 @@ readonly class PasskeyProvider
 
     public function findByCredentialId(string $credentialId): Passkey
     {
-        return Passkey::fromRow($this->broker->findByCredentialId($credentialId));
+        $res = $this->broker->findByCredentialId($credentialId);
+        return Passkey::fromRow($res);
+    }
+
+    /**
+     * @return Passkey[]
+     */
+    public function findAllByIdentity(mixed $identifier): array
+    {
+        return Passkey::fromRows($this->broker->findAllByIdentity($identifier));
     }
 
     public function findUserIdByCredentialId(string $credentialId): ?int
@@ -42,22 +49,22 @@ readonly class PasskeyProvider
             return null;
         }
         $passkey = Passkey::fromRow($row);
-        $credIdBin = Utils::byteaToString($passkey->credential_id ?? null);
-        $pubKeyCoseBin = Utils::byteaToString($passkey->public_key_cose ?? null);
+        $credIdBin = $passkey->credential_id ?? null;
+        $pubKeyCoseBin = $passkey->public_key_cose ?? null;
         $transports = null;
         if (!empty($row->transports)) {
             $transports = array_values(array_filter(array_map('trim', explode(',', $row->transports))));
         }
         return new PublicKeyCredentialSource(
-            publicKeyCredentialId: hex2bin($credIdBin),
+            publicKeyCredentialId: $credIdBin,
             type: PublicKeyCredentialDescriptor::CREDENTIAL_TYPE_PUBLIC_KEY,
             transports: $transports,
             attestationType: 'none',
             trustPath: new EmptyTrustPath(),
             aaguid: Uuid::fromString('00000000-0000-0000-0000-000000000000'),
-            credentialPublicKey: hex2bin($pubKeyCoseBin),
-            userHandle: (string)$row->user_id,
-            counter: (int)$row->sign_count,
+            credentialPublicKey: $pubKeyCoseBin,
+            userHandle: (string) $row->user_id,
+            counter: (int) $row->sign_count,
             otherUI: []
         );
     }

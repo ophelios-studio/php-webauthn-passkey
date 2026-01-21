@@ -1,6 +1,4 @@
-<?php
-
-namespace Passkey;
+<?php namespace Passkey;
 
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
 use Webauthn\PublicKeyCredential;
@@ -105,15 +103,14 @@ final readonly class PasskeyService
 
         unset($_SESSION['webauthn_creation_options']);
 
-        // Store credential_id and public_key_cose as hex strings because the broker uses decode(?, 'hex') when inserting
         $passkey = new Passkey(
             id: null,
             user_id: $authenticatedUserId,
-            credential_id: bin2hex($source->publicKeyCredentialId),
-            public_key_cose: bin2hex($source->credentialPublicKey),
+            credential_id: $source->publicKeyCredentialId,
+            public_key_cose: $source->credentialPublicKey,
             sign_count: $source->counter,
-            backup_eligible: ($source->backupEligible ?? false),
-            prf_salt: bin2hex(random_bytes(32)),
+            backup_eligible: $source->backupEligible ?? false,
+            prf_salt: random_bytes(32),
             prf_eval_label: $this->prfEvalSaltLabel,
             transports: !empty($source->transports)
                 ? implode(',', $source->transports)

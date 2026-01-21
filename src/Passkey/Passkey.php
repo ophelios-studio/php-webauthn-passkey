@@ -5,11 +5,11 @@ final readonly class Passkey
     public function __construct(
         public ?string $id, // uuid
         public mixed $user_id,
-        public string $credential_id, // binary (BYTEA) from DB
-        public string $public_key_cose, // binary (BYTEA)
+        public string $credential_id, // Bytes
+        public string $public_key_cose, // Bytes
         public int $sign_count,
         public bool $backup_eligible,
-        public ?string $prf_salt = null, // binary (BYTEA)
+        public ?string $prf_salt = null, // Bytes
         public ?string $prf_eval_label = null,
         public ?string $transports,
         public ?string $created_at = null,
@@ -45,11 +45,11 @@ final readonly class Passkey
         return new self(
             id: $id,
             user_id: $userId,
-            credential_id: $credentialId,
-            public_key_cose: $publicKeyCose,
+            credential_id: ($credentialId),
+            public_key_cose: ($publicKeyCose),
             sign_count: $signCount,
             backup_eligible: $backupEligible,
-            prf_salt: $prfSalt,
+            prf_salt: ($prfSalt),
             prf_eval_label: $prfEvalLabel,
             transports: $transports,
             created_at: $createdAt,

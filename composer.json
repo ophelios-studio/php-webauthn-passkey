@@ -8,6 +8,11 @@
         "Passkey\\": "src/Passkey"
       }
     },
+    "autoload-dev": {
+      "psr-4": {
+        "Passkey\\Tests\\": "tests/"
+      }
+    },
     "authors": [
       {
         "name": "David Tucker",

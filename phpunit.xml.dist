@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheResult="false"
+         executionOrder="random"
+         beStrictAboutOutputDuringTests="true"
+         displayDetailsOnTestsThatTriggerDeprecations="true"
+         displayDetailsOnTestsThatTriggerNotices="true"
+         displayDetailsOnTestsThatTriggerWarnings="true"
+         failOnDeprecation="false"
+         failOnNotice="true"
+         failOnWarning="true"
+         failOnRisky="true">
+    <testsuites>
+        <testsuite name="default">
+            <directory>tests</directory>
+        </testsuite>
+    </testsuites>
+    <source ignoreSuppressionOfDeprecations="true">
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+    <php>
+        <!-- The library starts the native session itself: no cookie and no cache headers, so a
+             session can start after PHPUnit has written to the terminal. -->
+        <ini name="session.use_cookies" value="0"/>
+        <ini name="session.cache_limiter" value=""/>
+    </php>
+</phpunit>

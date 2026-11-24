@@ -1,0 +1,39 @@
+{
+    "attestation": "none",
+    "authenticatorSelection": {
+        "requireResidentKey": true,
+        "residentKey": "required",
+        "userVerification": "required"
+    },
+    "challenge": "<random 32 bytes, base64url>",
+    "extensions": {
+        "prf": {
+            "eval": {
+                "first": "FJWCwMX44iSjMrLnca4yFZJEilp41nO18uF3S6FoLIA"
+            }
+        }
+    },
+    "pubKeyCredParams": [
+        {
+            "alg": -7,
+            "type": "public-key"
+        },
+        {
+            "alg": -8,
+            "type": "public-key"
+        },
+        {
+            "alg": -257,
+            "type": "public-key"
+        }
+    ],
+    "rp": {
+        "id": "app.example.com",
+        "name": "Test App"
+    },
+    "user": {
+        "displayName": "Ada Lovelace",
+        "id": "dXNlcjphZGE_Pn4",
+        "name": "ada@example.com"
+    }
+}

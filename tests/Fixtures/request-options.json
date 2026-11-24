@@ -1,0 +1,5 @@
+{
+    "challenge": "<random 32 bytes, base64url>",
+    "rpId": "app.example.com",
+    "userVerification": "required"
+}

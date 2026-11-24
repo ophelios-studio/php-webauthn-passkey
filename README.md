@@ -10,14 +10,12 @@ composer require ophelios/php-webauthn-passkey
 Requirements: PHP >= 8.4 and `web-auth/webauthn-lib` 5.3.17 or later (installed by Composer). The pages that run
 the ceremonies must be served over HTTPS, `localhost` included.
 
-### Upgrading from 1.x
+### Upgrading from 1.0.0
 
-- Require `"ophelios/php-webauthn-passkey": "^2.0"`.
-- `PasskeyProvider::getCredentialSource()` now returns `?Webauthn\CredentialRecord` instead of
-  `?Webauthn\PublicKeyCredentialSource`.
-- Composer moves `web-auth/webauthn-lib` to 5.x: code of your own that calls it directly must follow its 5.x API.
+The broker interface, the byte fields, the origin rule and the way refusals are returned changed: see "Upgrading from
+1.0.0" in [CHANGELOG.md](CHANGELOG.md).
 
-### Add the required table into your database. The example below if for PostgreSQL:
+### Add the required table into your database. The example below is for PostgreSQL:
 
 ```postgresql
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -38,7 +36,10 @@ CREATE TABLE account.passkeys
 ```
 Replace the `<YOUR USER ID REFERENCE>` with the column name of your user identifier.
 
-The identifier column if of type UUID given by `gen_random_uuid()` which is included in the extension `pgcrypto`. 
+The `UNIQUE` constraint on `credential_id` is required: a credential ID belongs to one user. `verify()` refuses one
+that is already registered, but only the constraint holds when two registrations run at the same time.
+
+The identifier column is of type UUID given by `gen_random_uuid()` which is included in the extension `pgcrypto`. 
 You can enable it with `CREATE EXTENSION IF NOT EXISTS "pgcrypto";` as shown above.
 
 ## 🌱 Usage
@@ -115,11 +116,36 @@ If you already have a table and want to use the PRF extension, add the column:
 ALTER TABLE account.passkeys ADD COLUMN prf_salt BYTEA;
 ```
 
+### Create the service
+
+```php
+use Models\Account\Brokers\PasskeyBroker;
+use Passkey\PasskeyProvider;
+use Passkey\PasskeyService;
+
+$service = new PasskeyService(
+    provider: new PasskeyProvider(new PasskeyBroker()),
+    rpName: 'Your App',
+    rpId: 'app.example.com',
+);
+```
+
+- **Fix `rpId` in production.** Without it, the RP ID comes from the request's `Host` header: the server then acts as
+  the relying party of any host name that reaches it, and the PRF input changes with the host (`www.` or not), which
+  makes PRF-encrypted data unreadable.
+- The origin of a ceremony must match exactly: `https://` followed by the RP ID. A site served on a subdomain of the
+  RP ID, or on a port other than 443, lists its origins: `allowedOrigins: ['https://app.example.com']`.
+- `verify()` and `authenticate()` return `['ok' => true]`, or `['ok' => false, 'err' => '...']` with the HTTP status
+  set to 400 or 401: return the array as JSON. They throw only when your broker or your callback fails.
+- Options serve one attempt and expire after 5 minutes.
+
 ### Create your registration Controller
 ```php
 <?php namespace Controllers\Application;
 
-use Models\Account\Services\WebAuthnService;
+use Models\Account\Brokers\PasskeyBroker;
+use Passkey\PasskeyProvider;
+use Passkey\PasskeyService;
 use Zephyrus\Network\Response;
 use Zephyrus\Network\Router\Post;
 
@@ -128,15 +154,18 @@ class WebAuthnController extends AppController
     #[Post("/webauthn/register/options")]
     public function options(): Response
     {
-        $service = new PasskeyService();
-        return $this->json($service->options(Passport::getUserId()));
+        return $this->json($this->passkeys()->options(Passport::getUserId()));
     }
 
     #[Post("/webauthn/register/verify")]
     public function verify(): Response
     {
-        $service = new PasskeyService();
-        return $this->json($service->verify(Passport::getUserId()));
+        return $this->json($this->passkeys()->verify(Passport::getUserId()));
+    }
+
+    private function passkeys(): PasskeyService
+    {
+        return new PasskeyService(new PasskeyProvider(new PasskeyBroker()), rpName: 'Your App', rpId: 'app.example.com');
     }
 }
 ```
@@ -146,7 +175,9 @@ class WebAuthnController extends AppController
 <?php namespace Controllers\Public;
 
 use Controllers\Controller;
-use Models\Account\Services\WebAuthnService;
+use Models\Account\Brokers\PasskeyBroker;
+use Passkey\PasskeyProvider;
+use Passkey\PasskeyService;
 use Zephyrus\Network\Response;
 use Zephyrus\Network\Router\Post;
 
@@ -155,15 +186,21 @@ class WebAuthnController extends Controller
     #[Post("/webauthn/login/options")]
     public function options(): Response
     {
-        $service = new WebAuthnService();
-        return $this->json($service->assertionOptions());
+        return $this->json($this->passkeys()->assertionOptions());
     }
 
     #[Post("/webauthn/login/verify")]
     public function verify(): Response
     {
-        $service = new WebAuthnService();
-        return $this->json($service->authenticate());
+        // The callback runs only once the assertion is verified, with the identifier your broker stored
+        return $this->json($this->passkeys()->authenticate(function (mixed $userId): void {
+            $this->signIn($userId); // your own sign-in: regenerate the session ID, remember the user
+        }));
+    }
+
+    private function passkeys(): PasskeyService
+    {
+        return new PasskeyService(new PasskeyProvider(new PasskeyBroker()), rpName: 'Your App', rpId: 'app.example.com');
     }
 }
 ```
@@ -182,14 +219,14 @@ security:
 ### Front-end module (ESM) for passkey registration and login
 We provide an ES module you can use to handle both Passkey registration (create) and authentication (login) with configurable endpoints.
 
-- Module file: backpack/public/javascripts/modules/passkey.js
+- Module file: backpack/public/javascripts/pulsar/modules/passkey.js
 
 Registration (create) example with callbacks:
 
 ```html
 <button id="createPasskeyBtn">Create a Passkey</button>
 <script type="module">
-  import { initPasskeyRegistration } from '/javascripts/modules/passkey.js';
+  import { initPasskeyRegistration } from '/javascripts/pulsar/modules/passkey.js';
   initPasskeyRegistration({
     buttonSelector: '#createPasskeyBtn',
     optionsUrl: '/webauthn/register/options',
@@ -212,7 +249,7 @@ Login (assertion) example with callbacks:
 ```html
 <button id="btn-passkey-login">Login with Passkey</button>
 <script type="module">
-  import { initPasskeyLogin } from '/javascripts/modules/passkey.js';
+  import { initPasskeyLogin } from '/javascripts/pulsar/modules/passkey.js';
   initPasskeyLogin({
     buttonSelector: '#btn-passkey-login',
     optionsUrl: '/webauthn/login/options',
@@ -233,7 +270,7 @@ Login (assertion) example with callbacks:
 Programmatic usage (no UI binding):
 
 ```js
-import { registerPasskey, passkeyLogin } from '/javascripts/modules/passkey.js';
+import { registerPasskey, passkeyLogin } from '/javascripts/pulsar/modules/passkey.js';
 
 // Registration
 const reg = await registerPasskey({
@@ -272,6 +309,13 @@ $service = new Passkey\PasskeyService($provider, rpName: 'Your App', enablePrf: 
 ```php
 $seedB64Url = $service->deriveSeedFromPrf($credentialIdRaw, $prfFirstOutputB64Url);
 ```
+
+- The PRF output must be 32 bytes (`UnexpectedValueException` otherwise); an unknown credential throws a
+  `RuntimeException`.
+
+- **The seed proves nothing by itself.** `deriveSeedFromPrf()` derives a seed from whatever PRF output it is given:
+  the seed is bound to no verified assertion. Never treat a derived seed as authentication; use it only as key
+  material, where a wrong PRF output gives a key that decrypts nothing.
 >Notes on PRF-derived seed usage: 
 > - Unfortunately, not all authenticators support PRF, as this is a client opt-in extension, you cannot enforce it. I would highly recommend keeping a fallback solution. Currently, only linux-based platform authenticators, macOS/iOS, android and certain authenticator app support PRF.
 > - The derived PRF output is a stable and cryptographically strong 32-byte material that can be used as a `seed` for encryption. It is not a secret by itself. And thus, cannot and should not be used as one.

@@ -12,8 +12,8 @@ carries a PRF output. The rest of the PHP API, the broker interface and the opti
   into your public assets again. `verify()` and `authenticate()` answer 400 `PRF results are not accepted` to a
   credential whose `clientExtensionResults` carries `prf.results` or `prfResults`, which the 2.0.0 module posted with
   `prf: { enabled: true }`. `prf: { enabled: true }` alone is accepted.
-- `PasskeyService::deriveSeedFromPrf()` is removed. Return the passkey's `prf_salt` in base64url (it is not secret), in
-  your verify response or from an endpoint of your own, and derive the seed in the browser:
+- `PasskeyService::deriveSeedFromPrf()` is removed. Return the passkey's `prf_salt` in base64url to its signed-in owner
+  only, once the ceremony is verified, in your verify response, and derive the seed in the browser:
   `derivePrfSeed(result.prf.first, result.prf_salt)`. For the same PRF output and salt bytes it returns the seed
   `deriveSeedFromPrf()` returned, so data encrypted under that seed stays readable. A broker that returns `prf_salt` as
   hex text decodes it before sending it, as `deriveSeedFromPrf()` did. The README shows a verify endpoint that adds
@@ -25,6 +25,11 @@ carries a PRF output. The rest of the PHP API, the broker interface and the opti
   returned a PRF output. The `onSuccess` callbacks receive the same result.
 - The registration POST carries the client extension results without `prf` and `prfResults`. The login POST carries
   no `clientExtensionResults`, with or without `prf: { enabled: true }`.
+- `registerPasskey()` and `passkeyLogin()` take `prf` in the result from the authenticator only: a `prf` or `ok` in the
+  verify endpoint's JSON is replaced, and `ok` is always `true` on success.
+- `derivePrfSeed()` throws a `TypeError` for an argument that is not a string.
+- Without `prf: { enabled: true }`, the module no longer passes the `prf` extension to `navigator.credentials.create()`
+  and `get()`, whatever the options carry; the other extensions are passed unchanged.
 - An integration that never passed `prf: { enabled: true }` and never called `runPrfBoundAction()` or
   `deriveSeedFromPrf()` only copies the module again.
 

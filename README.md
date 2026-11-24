@@ -312,8 +312,9 @@ one (400 `PRF results are not accepted`). `prf: { enabled: true }` alone is acce
    $service = new Passkey\PasskeyService($provider, rpName: 'Your App', rpId: 'app.example.com', enablePrf: true);
    ```
 
-2. Return the passkey's `prf_salt` in your verify response. The salt is not secret; the browser needs it to derive the
-   seed. Read the credential ID from the request only once the ceremony is verified:
+2. Return the passkey's `prf_salt` to its signed-in owner only, once the ceremony is verified, in your verify
+   response. The browser needs it to derive the seed. Read the credential ID from the request only once the ceremony
+   is verified:
 
    ```php
    #[Post("/webauthn/login/verify")]
@@ -347,6 +348,10 @@ one (400 `PRF results are not accepted`). `prf: { enabled: true }` alone is acce
 
    The registration endpoint does the same after `verify()`, with the user it registered. Send the raw salt bytes: a
    broker that returns `prf_salt` as hex text decodes it first.
+
+   `prfEvaluate()` runs an assertion that nobody verifies, so an endpoint that returns the salt for it limits itself to
+   the passkeys of the signed-in user, as `prfSalt()` above does. Never post `credential.toJSON()`: Firefox 155's
+   native `toJSON()` puts `prf.results.first` in it in base64url (the module does not use it).
 
 3. In the browser, ask for the PRF output and derive the seed with `derivePrfSeed()` (HKDF-SHA256, `info` `seed:v1`,
    32 bytes, base64url). It throws on a PRF output that is not 32 bytes.

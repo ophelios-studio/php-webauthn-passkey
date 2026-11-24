@@ -149,6 +149,65 @@ for (const ceremony of Object.keys(RUNS)) {
   }
 }
 
+/** Doubles whose verify JSON claims a prf and ok "yes", whose authenticator returns a PRF output or none. */
+function serverClaimsPrf(ceremony, authenticatorPrf, extra = {}) {
+  const calls = [];
+  const SERVER_PRF = Uint8Array.from({ length: 32 }, (_, i) => 0xee ^ i);
+  const options = ceremony === 'registration'
+    ? { challenge: 'AAAA', user: { id: 'AQID' }, extensions: { prf: { eval: { first: PRF_INPUT } }, ...extra } }
+    : { challenge: 'AAAA', extensions: { prf: { eval: { first: PRF_INPUT } }, ...extra } };
+  const fetch = async (url, init) => {
+    calls.push({ url, body: init && init.body });
+    const json = calls.length === 1 ? options : { ok: 'yes', prf: { first: base64Url(SERVER_PRF) }, prf_salt: PRF_SALT };
+    return { ok: true, json: async () => json };
+  };
+  const answer = async (arg) => {
+    calls.push({ create: arg });
+    const cred = fakeCredential(ceremony, 'ArrayBuffer', 'prf.results');
+    if (!authenticatorPrf) {
+      cred.getClientExtensionResults = () => ({ credProps: { rk: true } });
+    }
+    return cred;
+  };
+  return { calls, serverPrf: base64Url(SERVER_PRF), doubles: { fetch, navigator: { credentials: { create: answer, get: answer } } } };
+}
+
+for (const ceremony of Object.keys(RUNS)) {
+  test(`${ceremony}: a prf or ok in the server JSON is not the result's`, async () => {
+    const cfg = { optionsUrl: '/o', verifyUrl: '/v', prf: { enabled: true } };
+    const without = serverClaimsPrf(ceremony, false);
+    const resultWithout = await withDoubles(without.doubles, async () => (await loadModule())[RUNS[ceremony]](cfg));
+
+    assert.equal(resultWithout.ok, true);
+    assert.equal('prf' in resultWithout, false);
+
+    const withPrf = serverClaimsPrf(ceremony, true);
+    const result = await withDoubles(withPrf.doubles, async () => (await loadModule())[RUNS[ceremony]](cfg));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.prf.first, base64Url(PRF_FIRST));
+    assert.notEqual(result.prf.first, withPrf.serverPrf);
+  });
+
+  test(`${ceremony}: the prf extension is requested only when cfg.prf is enabled, other extensions always`, async () => {
+    for (const enabled of [false, true]) {
+      const { calls, doubles } = serverClaimsPrf(ceremony, true, { credProps: true });
+      const cfg = { optionsUrl: '/o', verifyUrl: '/v', prf: enabled ? { enabled: true } : undefined };
+
+      await withDoubles(doubles, async () => (await loadModule())[RUNS[ceremony]](cfg));
+
+      const sent = calls.find((c) => c.create).create.publicKey.extensions;
+      assert.equal(sent.credProps, true);
+      if (enabled) {
+        assert.ok(sent.prf.eval.first instanceof ArrayBuffer);
+        assert.equal(base64Url(new Uint8Array(sent.prf.eval.first)), PRF_INPUT);
+      } else {
+        assert.equal('prf' in sent, false);
+      }
+    }
+  });
+}
+
 test('registration still posts every client extension result but the PRF ones', async () => {
   const { calls, doubles } = ceremonyDoubles('registration', 'ArrayBuffer', 'prf.results');
 
@@ -223,3 +282,12 @@ test('derivePrfSeed refuses a missing salt', async () => {
 
   await assert.rejects(derivePrfSeed(base64Url(PRF_FIRST), ''));
 });
+
+for (const [name, value] of [['null', null], ['undefined', undefined]]) {
+  test(`derivePrfSeed refuses a ${name} salt or PRF output`, async () => {
+    const { derivePrfSeed } = await loadModule();
+
+    await assert.rejects(derivePrfSeed(base64Url(PRF_FIRST), value), TypeError);
+    await assert.rejects(derivePrfSeed(value, PRF_SALT), TypeError);
+  });
+}

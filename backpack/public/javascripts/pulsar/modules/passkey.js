@@ -68,7 +68,8 @@ function extensionResultsForServer(c) {
  * when the caller asked for it and the authenticator returned it. It never leaves the browser.
  */
 function verifiedResult(serverJson, cred, prfEnabled) {
-    const result = Object.assign({ ok: true }, serverJson);
+    const result = { ...serverJson, ok: true };
+    delete result.prf;
     const prf = prfEnabled ? encodePrfResultsFromCredential(cred) : null;
     if (prf && prf.first) {
         result.prf = prf;
@@ -110,6 +111,9 @@ export async function registerPasskey(cfg = {}) {
             opts.extensions = Object.assign({}, opts.extensions, {
                 prf: { eval: { first: b64urlToBuffer(opts.extensions.prf.eval.first) } }
             });
+        } else if (!prfEnabled && opts.extensions && 'prf' in opts.extensions) {
+            const { prf: _prf, ...others } = opts.extensions;
+            opts.extensions = others;
         }
 
         // Create credential
@@ -178,6 +182,9 @@ export async function passkeyLogin(cfg = {}) {
             publicKey.extensions = Object.assign({}, publicKey.extensions, {
                 prf: { eval: { first: b64urlToBuffer(publicKey.extensions.prf.eval.first) } }
             });
+        } else if (!prfEnabled && publicKey.extensions && 'prf' in publicKey.extensions) {
+            const { prf: _prf, ...others } = publicKey.extensions;
+            publicKey.extensions = others;
         }
         const cred = await navigator.credentials.get({ publicKey });
         const credential = {
@@ -293,10 +300,11 @@ export async function prfEvaluate(cfg = {}) {
  * salt and "seed:v1" as info. For the same PRF output and salt bytes it returns the seed the server
  * derived before 3.0.0, so data encrypted under that seed stays readable.
  * @param {string} prfFirstB64Url - The PRF output (prf.first), base64url; it must be 32 bytes.
- * @param {string} saltB64Url - The passkey's prf_salt bytes, base64url. It is not secret.
+ * @param {string} saltB64Url - The passkey's prf_salt bytes, base64url.
  * @returns {Promise<string>} the seed, base64url.
  */
 export async function derivePrfSeed(prfFirstB64Url, saltB64Url) {
+    if (typeof prfFirstB64Url !== "string" || typeof saltB64Url !== "string") throw new TypeError("derivePrfSeed takes two base64url strings");
     const prf = new Uint8Array(b64urlToBuffer(prfFirstB64Url));
     if (prf.length !== 32) {
         throw new Error("The PRF output must be 32 bytes");

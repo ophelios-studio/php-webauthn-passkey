@@ -15,10 +15,10 @@ readonly class PasskeyProvider
         $this->broker = $broker;
     }
 
-    public function findByCredentialId(string $credentialId): Passkey
+    public function findByCredentialId(string $credentialId): ?Passkey
     {
-        $res = $this->broker->findByCredentialId($credentialId);
-        return Passkey::fromRow($res);
+        $row = $this->broker->findByCredentialId($credentialId);
+        return $row === null ? null : Passkey::fromRow($row);
     }
 
     /**
@@ -29,7 +29,10 @@ readonly class PasskeyProvider
         return Passkey::fromRows($this->broker->findAllByIdentity($identifier));
     }
 
-    public function findUserIdByCredentialId(string $credentialId): ?int
+    /**
+     * The identifier the broker stored with the credential, or null when the credential is unknown.
+     */
+    public function findUserIdByCredentialId(string $credentialId): mixed
     {
         return $this->broker->findIdentifierByCredentialId($credentialId);
     }

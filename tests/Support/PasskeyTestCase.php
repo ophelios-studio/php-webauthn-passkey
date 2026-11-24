@@ -12,7 +12,7 @@ use Throwable;
 /**
  * Runs the service the way a request does: a native PHP session (kept in memory), the relying
  * party host in $_SERVER, the request body behind php://input, and a response code reset to 200
- * before each test.
+ * before each test. Time stands still on a frozen clock until a test moves it.
  */
 abstract class PasskeyTestCase extends TestCase
 {
@@ -21,6 +21,8 @@ abstract class PasskeyTestCase extends TestCase
     protected const string USER_ID = '42';
 
     protected InMemoryPasskeyBroker $broker;
+
+    protected FrozenClock $clock;
 
     /** @var array<string, mixed> */
     private array $serverBackup;
@@ -35,6 +37,7 @@ abstract class PasskeyTestCase extends TestCase
 
         $this->broker = new InMemoryPasskeyBroker();
         $this->broker->addIdentity(self::USER_ID, 'ada@example.com', 'Ada Lovelace');
+        $this->clock = FrozenClock::at('2030-01-01T00:00:00+00:00');
     }
 
     protected function tearDown(): void
@@ -45,9 +48,19 @@ abstract class PasskeyTestCase extends TestCase
         $_SERVER = $this->serverBackup;
     }
 
-    protected function service(bool $enablePrf = false): PasskeyService
+    /**
+     * @param list<string> $allowedOrigins
+     */
+    protected function service(bool $enablePrf = false, ?string $rpId = null, array $allowedOrigins = []): PasskeyService
     {
-        return new PasskeyService(new PasskeyProvider($this->broker), 'Test App', enablePrf: $enablePrf);
+        return new PasskeyService(
+            new PasskeyProvider($this->broker),
+            'Test App',
+            rpId: $rpId,
+            enablePrf: $enablePrf,
+            allowedOrigins: $allowedOrigins,
+            clock: $this->clock,
+        );
     }
 
     /**

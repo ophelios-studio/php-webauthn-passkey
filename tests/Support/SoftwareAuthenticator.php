@@ -11,7 +11,8 @@ use RuntimeException;
  * A test-only ES256 authenticator: a real P-256 key from OpenSSL, attestation format "none", the
  * authenticator data and the COSE key encoded in CBOR by hand. It reads the options JSON the way a
  * browser does and returns the credential JSON the JavaScript module posts back, so the library's
- * validators check genuine signatures.
+ * validators check genuine signatures. Its knobs answer the way a faulty or hostile authenticator
+ * would: a flag left out, another relying party, another ceremony, data altered after signing.
  */
 final class SoftwareAuthenticator
 {
@@ -35,8 +36,9 @@ final class SoftwareAuthenticator
 
     /**
      * @param bool $synced a synced passkey: backup eligible and backed up (BE and BS flags)
+     * @param string|null $credentialId the credential ID to claim; a random one when null
      */
-    public function __construct(private readonly bool $synced = false)
+    public function __construct(private readonly bool $synced = false, ?string $credentialId = null)
     {
         $this->privateKey = openssl_pkey_new([
             'private_key_type' => OPENSSL_KEYTYPE_EC,
@@ -44,7 +46,7 @@ final class SoftwareAuthenticator
         ]) ?: throw new RuntimeException('P-256 key generation failed');
         $details = openssl_pkey_get_details($this->privateKey) ?: throw new RuntimeException('no key details');
 
-        $this->credentialId = random_bytes(16);
+        $this->credentialId = $credentialId ?? random_bytes(16);
         $this->cose = "\xA5"
             . "\x01\x02"
             . "\x03\x26"
@@ -58,14 +60,23 @@ final class SoftwareAuthenticator
      *
      * @param array<string, mixed> $options the array options() returned
      * @param array<string, mixed> $clientExtensionResults
+     * @param string|null $rpId the relying party the authenticator data is hashed for; the options' one when null
+     * @param list<string> $transports the transports the client reports
      * @return array<string, mixed> the credential as the JavaScript module posts it
      */
-    public function register(array $options, string $origin, array $clientExtensionResults = []): array
-    {
+    public function register(
+        array $options,
+        string $origin,
+        array $clientExtensionResults = [],
+        bool $userPresent = true,
+        bool $userVerified = true,
+        ?string $rpId = null,
+        array $transports = ['internal'],
+    ): array {
         $this->userHandle = self::base64UrlDecode($options['user']['id']);
         $clientData = self::clientData('webauthn.create', $options['challenge'], $origin);
-        $authData = hash('sha256', $options['rp']['id'], true)
-            . chr(self::FLAG_USER_PRESENT | self::FLAG_USER_VERIFIED | self::FLAG_ATTESTED_CREDENTIAL_DATA | $this->backupFlags())
+        $authData = hash('sha256', $rpId ?? $options['rp']['id'], true)
+            . chr($this->flags($userPresent, $userVerified) | self::FLAG_ATTESTED_CREDENTIAL_DATA)
             . pack('N', $this->counter)
             . str_repeat("\x00", 16)
             . pack('n', strlen($this->credentialId))
@@ -83,7 +94,7 @@ final class SoftwareAuthenticator
             'response' => [
                 'clientDataJSON' => self::base64Url($clientData),
                 'attestationObject' => self::base64Url($attestationObject),
-                'transports' => ['internal'],
+                'transports' => $transports,
             ],
             'clientExtensionResults' => (object) $clientExtensionResults,
         ];
@@ -95,6 +106,9 @@ final class SoftwareAuthenticator
      * @param array<string, mixed> $options the array assertionOptions() returned
      * @param int|null $counter the signature counter to report; the next one when null
      * @param array<string, mixed>|null $clientExtensionResults
+     * @param string|null $rpId the relying party the authenticator data is hashed for; the options' one when null
+     * @param string $type the ceremony the client data claims
+     * @param bool $alteredAfterSigning flips a bit of the authenticator data once it is signed
      * @return array<string, mixed> the credential as the JavaScript module posts it
      */
     public function login(
@@ -102,14 +116,22 @@ final class SoftwareAuthenticator
         string $origin,
         ?int $counter = null,
         ?array $clientExtensionResults = null,
+        bool $userPresent = true,
+        bool $userVerified = true,
+        ?string $rpId = null,
+        string $type = 'webauthn.get',
+        bool $alteredAfterSigning = false,
     ): array {
         $this->counter = $counter ?? $this->counter + 1;
-        $clientData = self::clientData('webauthn.get', $options['challenge'], $origin);
-        $authData = hash('sha256', $options['rpId'], true)
-            . chr(self::FLAG_USER_PRESENT | self::FLAG_USER_VERIFIED | $this->backupFlags())
+        $clientData = self::clientData($type, $options['challenge'], $origin);
+        $authData = hash('sha256', $rpId ?? $options['rpId'], true)
+            . chr($this->flags($userPresent, $userVerified))
             . pack('N', $this->counter);
         openssl_sign($authData . hash('sha256', $clientData, true), $signature, $this->privateKey, OPENSSL_ALGO_SHA256)
             ?: throw new RuntimeException('signature failed');
+        if ($alteredAfterSigning) {
+            $authData[36] = chr(ord($authData[36]) ^ 0x01); // the last byte of the counter
+        }
 
         $credential = [
             'id' => self::base64Url($this->credentialId),
@@ -128,9 +150,11 @@ final class SoftwareAuthenticator
         return $credential;
     }
 
-    private function backupFlags(): int
+    private function flags(bool $userPresent, bool $userVerified): int
     {
-        return $this->synced ? self::FLAG_BACKUP_ELIGIBLE | self::FLAG_BACKED_UP : 0;
+        return ($userPresent ? self::FLAG_USER_PRESENT : 0)
+            | ($userVerified ? self::FLAG_USER_VERIFIED : 0)
+            | ($this->synced ? self::FLAG_BACKUP_ELIGIBLE | self::FLAG_BACKED_UP : 0);
     }
 
     private static function clientData(string $type, string $challenge, string $origin): string
@@ -164,6 +188,7 @@ final class SoftwareAuthenticator
 
     private static function base64UrlDecode(string $encoded): string
     {
-        return base64_decode(strtr($encoded, '-_', '+/'), true) ?: throw new RuntimeException('invalid base64url');
+        $decoded = base64_decode(strtr($encoded, '-_', '+/'), true);
+        return $decoded !== false ? $decoded : throw new RuntimeException('invalid base64url');
     }
 }

@@ -7,6 +7,7 @@ namespace Passkey\Tests\Support;
 use Passkey\Passkey;
 use Passkey\PasskeyBrokerInterface;
 use stdClass;
+use Throwable;
 
 /**
  * A broker that keeps passkeys in memory, shaped like the rows a database broker returns
@@ -22,6 +23,9 @@ final class InMemoryPasskeyBroker implements PasskeyBrokerInterface
 
     /** @var list<Passkey> */
     public array $inserted = [];
+
+    /** Thrown by insert() when set: the database failing once the ceremony is verified. */
+    public ?Throwable $insertFailure = null;
 
     public function addIdentity(string $identifier, string $email, string $displayName): void
     {
@@ -59,6 +63,9 @@ final class InMemoryPasskeyBroker implements PasskeyBrokerInterface
 
     public function insert(Passkey $passkey): void
     {
+        if ($this->insertFailure !== null) {
+            throw $this->insertFailure;
+        }
         $this->inserted[] = $passkey;
         $this->rows[$passkey->credential_id] = (object) [
             'id' => 'passkey-' . count($this->inserted),

@@ -10,6 +10,11 @@ composer require ophelios/php-webauthn-passkey
 Requirements: PHP >= 8.4 and `web-auth/webauthn-lib` 5.3.17 or later (installed by Composer). The pages that run
 the ceremonies must be served over HTTPS, `localhost` included.
 
+### Upgrading from 2.0.0
+
+The PRF output no longer reaches the server: copy the JavaScript module again, and derive the seed in the browser with
+`derivePrfSeed()`. See "Upgrading from 2.0.0" in [CHANGELOG.md](CHANGELOG.md).
+
 ### Upgrading from 1.0.0
 
 The broker interface, the byte fields, the origin rule and the way refusals are returned changed: see "Upgrading from
@@ -221,6 +226,9 @@ We provide an ES module you can use to handle both Passkey registration (create)
 
 - Module file: backpack/public/javascripts/pulsar/modules/passkey.js
 
+Copy the file into your public assets again on every upgrade of the library: the module and the service change
+together.
+
 Registration (create) example with callbacks:
 
 ```html
@@ -231,10 +239,8 @@ Registration (create) example with callbacks:
     buttonSelector: '#createPasskeyBtn',
     optionsUrl: '/webauthn/register/options',
     verifyUrl: '/webauthn/register/verify',
-    // Experimental PRF (disabled by default)
-    prf: { enabled: true },
-    onSuccess: () => {
-      // e.g., show a toast or update UI
+    onSuccess: (result) => {
+      // result is your verify endpoint's JSON, with ok: true
       console.log('Passkey created successfully');
     },
     onError: (err) => {
@@ -254,10 +260,8 @@ Login (assertion) example with callbacks:
     buttonSelector: '#btn-passkey-login',
     optionsUrl: '/webauthn/login/options',
     verifyUrl: '/webauthn/login/verify',
-    // Experimental PRF (disabled by default)
-    prf: { enabled: true },
-    onSuccess: () => {
-      // e.g., redirect or update UI
+    onSuccess: (result) => {
+      // result is your verify endpoint's JSON, with ok: true
       window.location.href = '/';
     },
     onError: (err) => {
@@ -284,38 +288,94 @@ if (!reg.ok) {
 // Authentication
 const auth = await passkeyLogin({
   optionsUrl: '/webauthn/login/options',
-  verifyUrl: '/webauthn/login/verify',
-  prf: { enabled: true } // experimental
+  verifyUrl: '/webauthn/login/verify'
 });
 if (auth.ok) {
-  // success
+  // success: auth holds your verify endpoint's JSON
 }
 ```
 
+On success, `registerPasskey()` and `passkeyLogin()` (and the `onSuccess` callbacks) return your verify endpoint's JSON
+with `ok: true`; on failure, `{ ok: false, err }`.
+
 ## Experimental: PRF-based deterministic seed (opt-in)
 
-- Server exposes a site-scoped PRF input salt when enabled. Instantiate the service with `enablePrf: true`:
+The PRF extension lets a passkey produce a stable 32-byte output, the same each time for the same passkey and input.
+Derived into a seed, it gives key material for encryption in the browser. **The PRF output stays in the browser**: the
+module returns it to your code and never posts it, and `verify()` and `authenticate()` refuse a credential that carries
+one (400 `PRF results are not accepted`). `prf: { enabled: true }` alone is accepted.
 
-```php
-$service = new Passkey\PasskeyService($provider, rpName: 'Your App', enablePrf: true);
-```
+1. Enable it on the service. The options then carry a site-scoped PRF input, and `verify()` stores a random 32-byte
+   `prf_salt` with each new passkey (add the column, see above):
 
-- During registration, a per-passkey 32-byte random salt is generated and stored in `prf_salt`.
+   ```php
+   $service = new Passkey\PasskeyService($provider, rpName: 'Your App', rpId: 'app.example.com', enablePrf: true);
+   ```
 
-- Clients that opt-in to PRF (`prf: { enabled: true }`) will request PRF from the authenticator and return the PRF output in `clientExtensionResults.prfResults`.
+2. Return the passkey's `prf_salt` in your verify response. The salt is not secret; the browser needs it to derive the
+   seed. Read the credential ID from the request only once the ceremony is verified:
 
-- After a successful assertion (or attestation), you can derive a deterministic 32-byte seed on the server from the client PRF output and the stored `prf_salt` using:
+   ```php
+   #[Post("/webauthn/login/verify")]
+   public function verify(): Response
+   {
+       $userId = null;
+       $result = $this->passkeys()->authenticate(function (mixed $identifier) use (&$userId): void {
+           $this->signIn($identifier);
+           $userId = $identifier;
+       });
+       if ($result['ok']) {
+           $result['prf_salt'] = $this->prfSalt($userId);
+       }
+       return $this->json($result);
+   }
 
-```php
-$seedB64Url = $service->deriveSeedFromPrf($credentialIdRaw, $prfFirstOutputB64Url);
-```
+   /**
+    * The prf_salt of the passkey the request carries, base64url, when it belongs to the user.
+    */
+   private function prfSalt(mixed $userId): ?string
+   {
+       $body = json_decode((string) file_get_contents('php://input'), true);
+       $rawId = base64_decode(strtr((string) ($body['credential']['rawId'] ?? ''), '-_', '+/'), true);
+       $passkey = is_string($rawId) ? new PasskeyProvider(new PasskeyBroker())->findByCredentialId($rawId) : null;
+       if ($passkey === null || (string) $passkey->user_id !== (string) $userId || !$passkey->prf_salt) {
+           return null;
+       }
+       return rtrim(strtr(base64_encode($passkey->prf_salt), '+/', '-_'), '=');
+   }
+   ```
 
-- The PRF output must be 32 bytes (`UnexpectedValueException` otherwise); an unknown credential throws a
-  `RuntimeException`.
+   The registration endpoint does the same after `verify()`, with the user it registered. Send the raw salt bytes: a
+   broker that returns `prf_salt` as hex text decodes it first.
 
-- **The seed proves nothing by itself.** `deriveSeedFromPrf()` derives a seed from whatever PRF output it is given:
-  the seed is bound to no verified assertion. Never treat a derived seed as authentication; use it only as key
-  material, where a wrong PRF output gives a key that decrypts nothing.
->Notes on PRF-derived seed usage: 
+3. In the browser, ask for the PRF output and derive the seed with `derivePrfSeed()` (HKDF-SHA256, `info` `seed:v1`,
+   32 bytes, base64url). It throws on a PRF output that is not 32 bytes.
+
+   ```js
+   import { passkeyLogin, derivePrfSeed } from '/javascripts/pulsar/modules/passkey.js';
+
+   const auth = await passkeyLogin({
+     optionsUrl: '/webauthn/login/options',
+     verifyUrl: '/webauthn/login/verify',
+     prf: { enabled: true }
+   });
+   if (auth.ok && auth.prf) {
+     const seed = await derivePrfSeed(auth.prf.first, auth.prf_salt);
+     // keep the seed in memory, use it as key material, never send it
+   }
+   ```
+
+   `registerPasskey()` and the `onSuccess` callbacks return the same `prf: { first, second? }` (base64url) when the
+   authenticator evaluated the PRF. Not every authenticator evaluates it at registration: `prfEvaluate({ optionsUrl })`
+   runs an assertion for its PRF output alone (no sign-in) and returns `{ credentialId, prfFirst }`. Its options
+   endpoint returns `assertionOptions()`.
+
+- For the same PRF output and salt, `derivePrfSeed()` returns the seed the server derived before 3.0.0, so data
+  encrypted under that seed stays readable.
+- The PRF output and the seed are secrets: keep them in memory, out of storage, logs and requests.
+- The seed proves nothing to the server. Sign-in is proven by the assertion `authenticate()` verifies, never by
+  something derived from the PRF output.
+
+>Notes on PRF-derived seed usage:
 > - Unfortunately, not all authenticators support PRF, as this is a client opt-in extension, you cannot enforce it. I would highly recommend keeping a fallback solution. Currently, only linux-based platform authenticators, macOS/iOS, android and certain authenticator app support PRF.
-> - The derived PRF output is a stable and cryptographically strong 32-byte material that can be used as a `seed` for encryption. It is not a secret by itself. And thus, cannot and should not be used as one.
+> - Fix `rpId`: the PRF input is derived from it, and a seed derived under another RP ID decrypts nothing.

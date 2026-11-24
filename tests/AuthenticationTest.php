@@ -58,7 +58,7 @@ final class AuthenticationTest extends PasskeyTestCase
     public static function browserExtensionResults(): iterable
     {
         yield 'without PRF' => [null];
-        yield 'with the PRF results' => [['prfResults' => ['results' => ['first' => 'c2VlZC1tYXRlcmlhbC1mcm9tLXRoZS1hdXRoZW50aWNhdG9y']]]];
+        yield 'reporting prf enabled, without its output' => [['prf' => ['enabled' => true]]];
     }
 
     /**

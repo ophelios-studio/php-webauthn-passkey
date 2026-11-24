@@ -20,9 +20,7 @@ use Webauthn\AuthenticatorAssertionResponse;
 use Cose\Algorithms;
 use DateTimeImmutable;
 use Psr\Clock\ClockInterface;
-use RuntimeException;
 use Throwable;
-use UnexpectedValueException;
 
 final readonly class PasskeyService
 {
@@ -114,6 +112,9 @@ final readonly class PasskeyService
             if (!$clientResponse) {
                 return self::refuse(400, 'Missing credential');
             }
+            if (self::carriesPrfResults($clientResponse)) {
+                return self::refuse(400, 'PRF results are not accepted');
+            }
             $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         } catch (Throwable) {
             return self::refuse(400, 'Verification failed');
@@ -186,6 +187,9 @@ final readonly class PasskeyService
             if (!$clientResponse) {
                 return self::refuse(400, 'Missing credential');
             }
+            if (self::carriesPrfResults($clientResponse)) {
+                return self::refuse(400, 'PRF results are not accepted');
+            }
             $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         } catch (Throwable) {
             return self::refuse(400, 'Verification failed');
@@ -217,36 +221,6 @@ final readonly class PasskeyService
 
         $callback($userId);
         return ['ok' => true];
-    }
-
-    /**
-     * Derives a stable 32-byte seed from the WebAuthn PRF output and the
-     * credential's stored salt using HKDF (SHA-256). Returns base64url.
-     *
-     * The seed proves nothing by itself: it is bound to no verified assertion, so any caller can
-     * post any PRF output and get a seed back. Use it as key material only, never as a proof of
-     * identity.
-     *
-     * @return string The PRF-Based Seed
-     * @throws RuntimeException when the credential is unknown or has no PRF salt
-     * @throws UnexpectedValueException when the PRF output is not 32 bytes of base64url
-     */
-    public function deriveSeedFromPrf(string $credentialIdRaw, string $prfFirstB64Url): string
-    {
-        $passkey = $this->provider->findByCredentialId($credentialIdRaw);
-        if ($passkey === null || $passkey->prf_salt === null || $passkey->prf_salt === '') {
-            throw new RuntimeException('Passkey salt not found');
-        }
-        $prf = self::base64url_decode($prfFirstB64Url);
-        if (strlen($prf) !== 32) {
-            throw new UnexpectedValueException('The PRF output must be 32 bytes');
-        }
-        $salt = $passkey->prf_salt;
-        if (is_string($salt) && strlen($salt) % 2 === 0 && ctype_xdigit($salt)) {
-            $salt = hex2bin($salt) ?: $salt;
-        }
-        $seed = hash_hkdf('sha256', $prf, 32, 'seed:v1', $salt);
-        return self::base64url_encode($seed);
     }
 
     /**
@@ -324,6 +298,22 @@ final readonly class PasskeyService
         return is_array($body) ? ($body['credential'] ?? null) : null;
     }
 
+    /**
+     * True when the posted credential carries a PRF output, under the standard key (prf.results) or
+     * the one the 2.0.0 JavaScript module posted (prfResults). The PRF output is key material for the
+     * browser alone: the JavaScript module never posts it, and a client that still does is refused
+     * instead of accepted. prf.enabled alone is accepted.
+     */
+    private static function carriesPrfResults(mixed $credential): bool
+    {
+        $extensions = is_array($credential) ? ($credential['clientExtensionResults'] ?? null) : null;
+        if (!is_array($extensions)) {
+            return false;
+        }
+        return array_key_exists('prfResults', $extensions)
+            || (is_array($extensions['prf'] ?? null) && array_key_exists('results', $extensions['prf']));
+    }
+
     private static function refuse(int $status, string $error): array
     {
         http_response_code($status);
@@ -387,15 +377,5 @@ final readonly class PasskeyService
     private static function base64url_encode(string $bin): string
     {
         return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');
-    }
-
-    private static function base64url_decode(string $b64): string
-    {
-        $b64 = strtr($b64, '-_', '+/');
-        $pad = strlen($b64) % 4;
-        if ($pad) {
-            $b64 .= str_repeat('=', 4 - $pad);
-        }
-        return base64_decode($b64, true) ?: '';
     }
 }

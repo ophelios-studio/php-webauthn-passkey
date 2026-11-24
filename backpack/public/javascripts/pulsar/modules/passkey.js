@@ -44,8 +44,36 @@ function credToJSON(c) {
             signature: c.response.signature ? bufferToB64url(c.response.signature) : undefined,
             userHandle: c.response.userHandle ? bufferToB64url(c.response.userHandle) : undefined,
         },
-        clientExtensionResults: typeof c.getClientExtensionResults === 'function' ? c.getClientExtensionResults() : {},
+        clientExtensionResults: extensionResultsForServer(c),
     };
+}
+
+/**
+ * The client extension results the server may see: every one but the PRF output, which stays in the
+ * browser under both the standard key (prf) and the one earlier versions posted (prfResults).
+ */
+function extensionResultsForServer(c) {
+    const ext = typeof c.getClientExtensionResults === 'function' ? c.getClientExtensionResults() : null;
+    const out = {};
+    if (ext && typeof ext === 'object') {
+        for (const key of Object.keys(ext)) {
+            if (key !== 'prf' && key !== 'prfResults') out[key] = ext[key];
+        }
+    }
+    return out;
+}
+
+/**
+ * The result of a verified ceremony: the server's verification JSON, plus the PRF output (base64url)
+ * when the caller asked for it and the authenticator returned it. It never leaves the browser.
+ */
+function verifiedResult(serverJson, cred, prfEnabled) {
+    const result = Object.assign({ ok: true }, serverJson);
+    const prf = prfEnabled ? encodePrfResultsFromCredential(cred) : null;
+    if (prf && prf.first) {
+        result.prf = prf;
+    }
+    return result;
 }
 
 /**
@@ -53,7 +81,9 @@ function credToJSON(c) {
  * @param {Object} cfg
  * @param {string} [cfg.optionsUrl="/webauthn/register/options"] - Creation options endpoint.
  * @param {string} [cfg.verifyUrl="/webauthn/register/verify"] - Verification endpoint.
- * @returns {Promise<{ok: boolean, err?: string}>}
+ * @param {{enabled: boolean}} [cfg.prf] - Request the PRF output; it is returned, never posted.
+ * @returns {Promise<{ok: boolean, err?: string, prf?: {first: string, second?: string}}>} on success, the
+ *          server's verification JSON with ok true, plus the PRF output in base64url when requested and returned.
  */
 export async function registerPasskey(cfg = {}) {
     const optionsUrl = cfg.optionsUrl || "/webauthn/register/options";
@@ -90,12 +120,6 @@ export async function registerPasskey(cfg = {}) {
 
         // Send back for verification/storage
         const payload = { credential: credToJSON(cred) };
-        if (prfEnabled) {
-            const prf = encodePrfResultsFromCredential(cred);
-            if (prf) {
-                payload.credential.clientExtensionResults = Object.assign({}, payload.credential.clientExtensionResults || {}, { prfResults: { results: prf } });
-            }
-        }
         const verifyRes = await fetch(verifyUrl, {
             method: 'POST',
             credentials: 'include',
@@ -106,7 +130,7 @@ export async function registerPasskey(cfg = {}) {
         if (!verifyRes.ok || !j.ok) {
             throw new Error(j.err || 'verify failed');
         }
-        return { ok: true };
+        return verifiedResult(j, cred, prfEnabled);
     } catch (e) {
         console.error(e);
         return { ok: false, err: e && e.message ? e.message : String(e) };
@@ -118,7 +142,9 @@ export async function registerPasskey(cfg = {}) {
  * @param {Object} cfg
  * @param {string} cfg.optionsUrl - URL to request assertion options.
  * @param {string} cfg.verifyUrl - URL to post the assertion for verification.
- * @returns {Promise<{ok: boolean, err?: string}>}
+ * @param {{enabled: boolean}} [cfg.prf] - Request the PRF output; it is returned, never posted.
+ * @returns {Promise<{ok: boolean, err?: string, prf?: {first: string, second?: string}}>} on success, the
+ *          server's verification JSON with ok true, plus the PRF output in base64url when requested and returned.
  */
 export async function passkeyLogin(cfg = {}) {
     const optionsUrl = cfg.optionsUrl || "/webauthn/login/options";
@@ -164,7 +190,6 @@ export async function passkeyLogin(cfg = {}) {
                 signature: bufferToB64url(cred.response.signature),
                 userHandle: cred.response.userHandle ? bufferToB64url(cred.response.userHandle) : null,
             },
-            clientExtensionResults: prfEnabled ? (function () { const prf = encodePrfResultsFromCredential(cred); return prf ? { prfResults: { results: prf } } : {}; })() : undefined,
         };
 
         const verifyRes = await fetch(verifyUrl, {
@@ -178,7 +203,7 @@ export async function passkeyLogin(cfg = {}) {
         if (!verifyRes.ok || !verify.ok) {
             throw new Error(verify.err || "Verification failed");
         }
-        return { ok: true };
+        return verifiedResult(verify, cred, prfEnabled);
     } catch (e) {
         console.error(e);
         return { ok: false, err: e && e.message ? e.message : String(e) };
@@ -191,7 +216,8 @@ export async function passkeyLogin(cfg = {}) {
  * @param {string} [cfg.buttonSelector="#createPasskeyBtn"] - Selector for the register button.
  * @param {string} [cfg.optionsUrl="/webauthn/register/options"] - Options endpoint.
  * @param {string} [cfg.verifyUrl="/webauthn/register/verify"] - Verify endpoint.
- * @param {(result: {ok: boolean, err?: string}) => void} [cfg.onSuccess] - Callback on success.
+ * @param {(result: {ok: true, prf?: {first: string, second?: string}}) => void} [cfg.onSuccess] - Callback on
+ *        success, with the result registerPasskey() returns.
  * @param {(error: string) => void} [cfg.onError] - Callback on failure.
  */
 export function initPasskeyRegistration(cfg = {}) {
@@ -263,31 +289,29 @@ export async function prfEvaluate(cfg = {}) {
 }
 
 /**
- * Evaluate PRF and POST it to an arbitrary backend endpoint.
- *
- * cfg:
- * - optionsUrl (required)
- * - actionUrl (required)
- * - buildPayload (optional): ({ credentialId, prfFirst }) => object
+ * Derives the 32-byte seed of a PRF output in the browser: HKDF-SHA256 with the passkey's prf_salt as
+ * salt and "seed:v1" as info. For the same PRF output and salt bytes it returns the seed the server
+ * derived before 3.0.0, so data encrypted under that seed stays readable.
+ * @param {string} prfFirstB64Url - The PRF output (prf.first), base64url; it must be 32 bytes.
+ * @param {string} saltB64Url - The passkey's prf_salt bytes, base64url. It is not secret.
+ * @returns {Promise<string>} the seed, base64url.
  */
-export async function runPrfBoundAction(cfg = {}) {
-    const actionUrl = cfg.actionUrl || cfg.enableUrl || "/webauthn/prf/enable";
-    const prf = await prfEvaluate({ optionsUrl: cfg.optionsUrl });
-
-    const payload = typeof cfg.buildPayload === "function"
-        ? cfg.buildPayload(prf)
-        : { credential_id: prf.credentialId, prf_first: prf.prfFirst };
-
-    const res = await fetch(actionUrl, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-    });
-
-    const j = await res.json().catch(() => ({ ok: false, err: "Invalid response" }));
-    if (!res.ok || !j.ok) throw new Error(j.err || "Action failed");
-    return j;
+export async function derivePrfSeed(prfFirstB64Url, saltB64Url) {
+    const prf = new Uint8Array(b64urlToBuffer(prfFirstB64Url));
+    if (prf.length !== 32) {
+        throw new Error("The PRF output must be 32 bytes");
+    }
+    const salt = new Uint8Array(b64urlToBuffer(saltB64Url));
+    if (salt.length === 0) {
+        throw new Error("The PRF salt is missing");
+    }
+    const key = await crypto.subtle.importKey("raw", prf, "HKDF", false, ["deriveBits"]);
+    const seed = await crypto.subtle.deriveBits(
+        { name: "HKDF", hash: "SHA-256", salt, info: new TextEncoder().encode("seed:v1") },
+        key,
+        256
+    );
+    return bufferToB64url(seed);
 }
 
 /**
@@ -296,7 +320,8 @@ export async function runPrfBoundAction(cfg = {}) {
  * @param {string} [cfg.buttonSelector="#btn-passkey-login"] - Selector for the login button.
  * @param {string} [cfg.optionsUrl="/webauthn/login/options"] - Options endpoint.
  * @param {string} [cfg.verifyUrl="/webauthn/login/verify"] - Verify endpoint.
- * @param {(result: {ok: boolean, err?: string}) => void} [cfg.onSuccess] - Callback on success.
+ * @param {(result: {ok: true, prf?: {first: string, second?: string}}) => void} [cfg.onSuccess] - Callback on
+ *        success, with the result passkeyLogin() returns.
  * @param {(error: string) => void} [cfg.onError] - Callback on failure.
  */
 export function initPasskeyLogin(cfg = {}) {

@@ -46,13 +46,12 @@ final class RegistrationTest extends PasskeyTestCase
         self::assertTrue($this->broker->inserted[0]->backup_eligible);
     }
 
-    public function test_a_registration_carrying_the_prf_results_the_browser_sends_is_accepted(): void
+    public function test_a_registration_reporting_prf_enabled_without_its_output_is_accepted(): void
     {
         $service = $this->service(enablePrf: true);
         $options = $service->options(self::USER_ID);
         self::postCredential((new SoftwareAuthenticator())->register($options, self::ORIGIN, [
             'prf' => ['enabled' => true],
-            'prfResults' => ['results' => ['first' => 'c2VlZC1tYXRlcmlhbC1mcm9tLXRoZS1hdXRoZW50aWNhdG9y']],
         ]));
 
         $result = $service->verify(self::USER_ID);

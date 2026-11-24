@@ -7,10 +7,12 @@ namespace Passkey\Tests\Support;
 use Passkey\PasskeyProvider;
 use Passkey\PasskeyService;
 use PHPUnit\Framework\TestCase;
+use Throwable;
 
 /**
  * Runs the service the way a request does: a native PHP session (kept in memory), the relying
- * party host in $_SERVER, and a response code reset to 200 before each test.
+ * party host in $_SERVER, the request body behind php://input, and a response code reset to 200
+ * before each test.
  */
 abstract class PasskeyTestCase extends TestCase
 {
@@ -37,6 +39,7 @@ abstract class PasskeyTestCase extends TestCase
 
     protected function tearDown(): void
     {
+        PhpInputStream::restore();
         $_SESSION = [];
         session_destroy();
         $_SERVER = $this->serverBackup;
@@ -45,6 +48,30 @@ abstract class PasskeyTestCase extends TestCase
     protected function service(bool $enablePrf = false): PasskeyService
     {
         return new PasskeyService(new PasskeyProvider($this->broker), 'Test App', enablePrf: $enablePrf);
+    }
+
+    /**
+     * Serves {"credential": ...} as the request body, the way the JavaScript module posts it.
+     *
+     * @param array<string, mixed> $credential
+     */
+    protected static function postCredential(array $credential): void
+    {
+        PhpInputStream::serve(json_encode(['credential' => $credential], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * Runs the call and returns what it threw, so a test can assert the refusal and then the state
+     * it left behind.
+     */
+    protected static function refusalOf(callable $call): ?Throwable
+    {
+        try {
+            $call();
+        } catch (Throwable $refusal) {
+            return $refusal;
+        }
+        return null;
     }
 
     protected static function base64UrlDecode(string $encoded): string

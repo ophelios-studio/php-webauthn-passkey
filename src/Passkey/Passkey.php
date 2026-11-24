@@ -9,8 +9,8 @@ final readonly class Passkey
         public string $public_key_cose, // Bytes
         public int $sign_count,
         public bool $backup_eligible,
-        public ?string $prf_salt = null, // Bytes
-        public ?string $prf_eval_label = null,
+        public ?string $prf_salt, // Bytes
+        public ?string $prf_eval_label,
         public ?string $transports,
         public ?string $created_at = null,
         public ?string $last_used_at = null,

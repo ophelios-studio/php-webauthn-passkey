@@ -9,7 +9,7 @@
          displayDetailsOnTestsThatTriggerDeprecations="true"
          displayDetailsOnTestsThatTriggerNotices="true"
          displayDetailsOnTestsThatTriggerWarnings="true"
-         failOnDeprecation="false"
+         failOnDeprecation="true"
          failOnNotice="true"
          failOnWarning="true"
          failOnRisky="true">

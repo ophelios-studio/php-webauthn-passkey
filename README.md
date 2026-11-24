@@ -7,7 +7,15 @@ Install with Composer:
 composer require ophelios/php-webauthn-passkey
 ```
 
-Requirements: PHP >= 8.4
+Requirements: PHP >= 8.4 and `web-auth/webauthn-lib` 5.3.17 or later (installed by Composer). The pages that run
+the ceremonies must be served over HTTPS, `localhost` included.
+
+### Upgrading from 1.x
+
+- Require `"ophelios/php-webauthn-passkey": "^2.0"`.
+- `PasskeyProvider::getCredentialSource()` now returns `?Webauthn\CredentialRecord` instead of
+  `?Webauthn\PublicKeyCredentialSource`.
+- Composer moves `web-auth/webauthn-lib` to 5.x: code of your own that calls it directly must follow its 5.x API.
 
 ### Add the required table into your database. The example below if for PostgreSQL:
 
@@ -49,29 +57,29 @@ use Zephyrus\Database\DatabaseBroker;
 
 class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
 {
-    public function findUserIdByCredentialId(string $credentialId): ?int
+    public function findIdentifierByCredentialId(string $credentialId): mixed
     {
-        $sql = "SELECT user_id FROM account.passkeys WHERE credential_id = ? LIMIT 1";
+        $sql = "SELECT user_id FROM account.passkeys WHERE credential_id = decode(?, 'hex') LIMIT 1";
         $row = $this->selectSingle($sql, [bin2hex($credentialId)]);
         return $row?->user_id ?? null;
     }
 
     public function findByCredentialId(string $credentialId): ?stdClass
     {
-        $sql = "SELECT * FROM account.passkeys WHERE credential_id = ? LIMIT 1";
+        $sql = "SELECT * FROM account.passkeys WHERE credential_id = decode(?, 'hex') LIMIT 1";
         return $this->selectSingle($sql, [bin2hex($credentialId)]);
     }
 
-    public function findAllByUserId(string $userId): array
+    public function findAllByIdentity(mixed $identifier): array
     {
         $sql = "SELECT * FROM account.passkeys WHERE user_id = ?";
-        return $this->select($sql, [$userId]);
+        return $this->select($sql, [$identifier]);
     }
 
-    public function findUserIdentity(string $userId): stdClass
+    public function findIdentity(mixed $identifier): stdClass
     {
         $sql = "SELECT email, fullname AS display_name FROM account.view_user_profile WHERE id = ?";
-        return $this->selectSingle($sql, [$userId]);
+        return $this->selectSingle($sql, [$identifier]);
     }
 
     public function updateUsageAndCounter(string $credentialId, int $newSignCount): void
@@ -79,7 +87,7 @@ class PasskeyBroker extends DatabaseBroker implements PasskeyBrokerInterface
         $this->query("UPDATE account.passkeys 
                          SET sign_count = ?, 
                              last_used_at = now() 
-                       WHERE credential_id = ?", [
+                       WHERE credential_id = decode(?, 'hex')", [
             $newSignCount,
             bin2hex($credentialId)
         ]);

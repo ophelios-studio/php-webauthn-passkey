@@ -1,8 +1,8 @@
 <?php namespace Passkey;
 
 use Symfony\Component\Uid\Uuid;
+use Webauthn\CredentialRecord;
 use Webauthn\PublicKeyCredentialDescriptor;
-use Webauthn\PublicKeyCredentialSource;
 use Webauthn\PublicKeyCredentialUserEntity;
 use Webauthn\TrustPath\EmptyTrustPath;
 
@@ -42,7 +42,12 @@ readonly class PasskeyProvider
         return new PublicKeyCredentialUserEntity($email, $userId, $display);
     }
 
-    public function getCredentialSource(string $credentialId): ?PublicKeyCredentialSource
+    /**
+     * The stored credential as the assertion validator needs it. Its backup eligibility is left
+     * unknown (null): stored values were written with a false default, and a wrong one would make
+     * the library refuse every assertion of a synced passkey.
+     */
+    public function getCredentialSource(string $credentialId): ?CredentialRecord
     {
         $row = $this->broker->findByCredentialId($credentialId);
         if (!$row) {
@@ -51,11 +56,11 @@ readonly class PasskeyProvider
         $passkey = Passkey::fromRow($row);
         $credIdBin = $passkey->credential_id ?? null;
         $pubKeyCoseBin = $passkey->public_key_cose ?? null;
-        $transports = null;
+        $transports = [];
         if (!empty($row->transports)) {
             $transports = array_values(array_filter(array_map('trim', explode(',', $row->transports))));
         }
-        return new PublicKeyCredentialSource(
+        return new CredentialRecord(
             publicKeyCredentialId: $credIdBin,
             type: PublicKeyCredentialDescriptor::CREDENTIAL_TYPE_PUBLIC_KEY,
             transports: $transports,

@@ -1,7 +1,12 @@
 <?php namespace Passkey;
 
+use Symfony\Component\Serializer\Encoder\JsonEncode;
+use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
+use Symfony\Component\Serializer\SerializerInterface;
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
+use Webauthn\CeremonyStep\CeremonyStepManagerFactory;
 use Webauthn\PublicKeyCredential;
+use Webauthn\PublicKeyCredentialOptions;
 use Webauthn\PublicKeyCredentialRpEntity;
 use Webauthn\AuthenticatorSelectionCriteria;
 use Webauthn\PublicKeyCredentialParameters;
@@ -29,7 +34,8 @@ final readonly class PasskeyService
         $userEntity = $this->provider->getUserCredentialEntity($authenticatedUserId);
 
         $rpId = $this->resolveRpId();
-        $rp = new PublicKeyCredentialRpEntity($this->rpName, $rpId);
+        // webauthn-lib 5.3 deprecates the RP name on the entity: rpName is set on the browser JSON below
+        $rp = new PublicKeyCredentialRpEntity(id: $rpId);
 
         $algos = [
             new PublicKeyCredentialParameters('public-key', Algorithms::COSE_ALGORITHM_ES256),
@@ -55,9 +61,11 @@ final readonly class PasskeyService
             session_start();
         }
 
-        // Store full options as JSON for later verification (ensures nested JsonSerializable objects are properly serialized)
-        $_SESSION['webauthn_creation_options'] = json_encode($creation, JSON_THROW_ON_ERROR);
-        $result = json_decode(json_encode($creation, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        // Store the full options as JSON for later verification; the browser receives the same JSON
+        $json = self::optionsToJson($creation);
+        $_SESSION['webauthn_creation_options'] = $json;
+        $result = self::browserOptions($json);
+        $result['rp']['name'] = $this->rpName;
         if ($this->enablePrf) {
             $rpEvalSalt = $this->deriveEvalSalt($rpId);
             $result['extensions']['prf']['eval']['first'] = self::base64url_encode($rpEvalSalt);
@@ -85,8 +93,7 @@ final readonly class PasskeyService
         }
 
         // Load the credential from client using the Serializer (no deprecated loader)
-        $attestationSupport = AttestationStatementSupportManager::create();
-        $serializer = new WebauthnSerializerFactory($attestationSupport)->create();
+        $serializer = self::serializer();
         $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         if (!($publicKeyCredential->response instanceof AuthenticatorAttestationResponse)) {
             http_response_code(400);
@@ -94,11 +101,14 @@ final readonly class PasskeyService
         }
         $attestationResponse = $publicKeyCredential->response;
 
-        // Re-create options from stored data using Serializer (no deprecated createFrom*)
-        $creation = $serializer->deserialize($optionsData, PublicKeyCredentialCreationOptions::class, 'json');
+        // Re-create options from stored data using Serializer (no deprecated createFrom*). No check
+        // reads rp.name, and denormalizing it trips the webauthn-lib 5.3 deprecation of the RP name.
+        $storedOptions = json_decode($optionsData, true, flags: JSON_THROW_ON_ERROR);
+        unset($storedOptions['rp']['name']);
+        $creation = $serializer->denormalize($storedOptions, PublicKeyCredentialCreationOptions::class, 'json');
 
         // Validate attestation
-        $validator = new AuthenticatorAttestationResponseValidator();
+        $validator = new AuthenticatorAttestationResponseValidator(new CeremonyStepManagerFactory()->creationCeremony());
         $source = $validator->check($attestationResponse, $creation, $this->resolveRpId());
 
         unset($_SESSION['webauthn_creation_options']);
@@ -132,8 +142,9 @@ final readonly class PasskeyService
         if (session_status() !== PHP_SESSION_ACTIVE) {
             session_start();
         }
-        $_SESSION['webauthn_request_options'] = json_encode($options, JSON_THROW_ON_ERROR);
-        $result = json_decode(json_encode($options, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        $json = self::optionsToJson($options);
+        $_SESSION['webauthn_request_options'] = $json;
+        $result = self::browserOptions($json);
         if ($this->enablePrf) {
             $result['extensions']['prf']['eval']['first'] = self::base64url_encode($this->deriveEvalSalt($rpId));
         }
@@ -159,8 +170,7 @@ final readonly class PasskeyService
             return ['ok' => false, 'err' => 'Missing credential'];
         }
 
-        $attestationSupport = AttestationStatementSupportManager::create();
-        $serializer = new WebauthnSerializerFactory($attestationSupport)->create();
+        $serializer = self::serializer();
         $publicKeyCredential = $serializer->denormalize($clientResponse, PublicKeyCredential::class);
         if (!($publicKeyCredential->response instanceof AuthenticatorAssertionResponse)) {
             http_response_code(400);
@@ -184,8 +194,7 @@ final readonly class PasskeyService
             return ['ok' => false, 'err' => 'Credential source not found'];
         }
 
-        $validator = new AuthenticatorAssertionResponseValidator();
-        // Pass the PublicKeyCredentialSource as required by the library
+        $validator = new AuthenticatorAssertionResponseValidator(new CeremonyStepManagerFactory()->requestCeremony());
         $source = $validator->check($credentialSource, $assertionResponse, $requestOptions, $this->resolveRpId(), (string)$userId);
 
         unset($_SESSION['webauthn_request_options']);
@@ -228,6 +237,39 @@ final readonly class PasskeyService
         $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
         $host = preg_replace('/:.*/', '', $host) ?: 'localhost';
         return $this->rpId ?? $host;
+    }
+
+    private static function serializer(): SerializerInterface
+    {
+        return new WebauthnSerializerFactory(AttestationStatementSupportManager::create())->create();
+    }
+
+    /**
+     * Serializes ceremony options with the library's serializer: binary fields as base64url, null
+     * fields left out. The options objects are not JsonSerializable, so json_encode() would dump
+     * their raw public properties instead.
+     */
+    private static function optionsToJson(PublicKeyCredentialOptions $options): string
+    {
+        return self::serializer()->serialize($options, 'json', [
+            AbstractObjectNormalizer::SKIP_NULL_VALUES => true,
+            JsonEncode::OPTIONS => JSON_THROW_ON_ERROR,
+        ]);
+    }
+
+    /**
+     * The options array handed to the browser. An empty credential list is left out, as it always
+     * was: webauthn-lib 5 serializes it as [] where 4.x omitted it.
+     */
+    private static function browserOptions(string $json): array
+    {
+        $options = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+        foreach (['excludeCredentials', 'allowCredentials'] as $list) {
+            if (($options[$list] ?? null) === []) {
+                unset($options[$list]);
+            }
+        }
+        return $options;
     }
 
     private function deriveEvalSalt(string $rpId): string
